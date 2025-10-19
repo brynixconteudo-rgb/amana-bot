@@ -18,7 +18,7 @@ const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL
 
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const TELEGRAM_FILE_API = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}`;
-const ENVIAR_AUDIO_RESPOSTA = true; // ativa resposta por voz
+const ENVIAR_AUDIO_RESPOSTA = true; // responde com áudio só se o input foi voz
 
 // ============ CONFIGURAR WEBHOOK ==============
 async function setupWebhook() {
@@ -37,7 +37,7 @@ router.post("/webhook", async (req, res) => {
 
   const chatId = message.chat.id;
   let userText = "";
-  let respostaGerada = ""; // armazenar o que Amana responderá
+  let respostaGerada = "";
 
   try {
     // 🎙️ Caso seja mensagem de voz
@@ -69,18 +69,21 @@ router.post("/webhook", async (req, res) => {
     if (/^\/start/i.test(userText)) {
       responseText =
         "🌙 Olá, eu sou o Amana_BOT.\n\nPosso ler seus e-mails, criar eventos, salvar memórias e arquivos.\nVocê pode digitar ou enviar um áudio naturalmente. 💬🎧";
-    } 
+    }
+
     else if (/^\/emails/i.test(userText)) {
       const auth = await authenticateGoogle();
       const result = await runCommand(auth, "READ_EMAILS", { maxResults: 3 });
-      if (result.total === 0) responseText = "Nenhum e-mail não lido encontrado 📭";
-      else {
+      if (!result || result.total === 0) {
+        responseText = "Nenhum e-mail não lido encontrado 📭";
+      } else {
         responseText = `📬 *${result.total} e-mails encontrados:*\n\n`;
-        result.emails.forEach((e) => {
+        result.emails?.forEach((e) => {
           responseText += `• *${e.subject || "(sem assunto)"}*\n  _${e.from}_\n\n`;
         });
       }
-    } 
+    }
+
     else if (/^\/memoria/i.test(userText)) {
       const frase = userText.replace("/memoria", "").trim() || "Memória via Telegram.";
       const auth = await authenticateGoogle();
@@ -90,7 +93,8 @@ router.post("/webhook", async (req, res) => {
         tags: ["telegram"],
       });
       responseText = "🧠 Memória registrada com sucesso!";
-    } 
+    }
+
     else if (/^\/evento/i.test(userText)) {
       const now = new Date();
       const start = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
@@ -103,15 +107,16 @@ router.post("/webhook", async (req, res) => {
         description: "Evento criado automaticamente via Amana_BOT.",
       });
       responseText = "📅 Evento criado com sucesso no seu calendário!";
-    } 
+    }
+
     else {
-      // 🌐 Conversa natural via IA
       const natural = await processNaturalMessage({ text: userText });
       responseText = natural.reply || "Ok.";
 
-      // ✅ Se IA gerou uma ação, executa
       if (natural.executedAction && natural.executedAction.command) {
         console.log("⚙️ Ação executada:", natural.executedAction.command);
+      } else {
+        console.log("💡 Nenhuma ação executada, apenas conversa natural.");
       }
     }
 
@@ -120,25 +125,25 @@ router.post("/webhook", async (req, res) => {
     // ============ ENVIO DE RESPOSTA ============
     const safe = (txt) => txt.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
 
-    // envia texto
-    await axios.post(`${TELEGRAM_API}/sendMessage`, {
-      chat_id: chatId,
-      text: safe(respostaGerada),
-      parse_mode: "MarkdownV2",
-    });
+    // 🟣 Texto → só texto
+    if (message.text) {
+      await axios.post(`${TELEGRAM_API}/sendMessage`, {
+        chat_id: chatId,
+        text: safe(respostaGerada),
+        parse_mode: "MarkdownV2",
+      });
+    }
 
-    // envia áudio apenas se foi originado por voz
+    // 🟠 Áudio → só áudio
     if (ENVIAR_AUDIO_RESPOSTA && message.voice) {
       const audioPath = await gerarAudio(respostaGerada);
       if (audioPath && fs.existsSync(audioPath)) {
         const form = new FormData();
         form.append("chat_id", chatId);
         form.append("voice", fs.createReadStream(audioPath));
-
         await axios.post(`${TELEGRAM_API}/sendVoice`, form, {
           headers: form.getHeaders(),
         });
-
         fs.unlinkSync(audioPath);
         console.log("🎤 Áudio enviado com sucesso.");
       }
