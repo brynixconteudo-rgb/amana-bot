@@ -1,13 +1,10 @@
 // apps/amana/telegram.js
-// 🤖 Integração Telegram do Amana_BOT (versão estável e compatível com Render + OAuth)
-
 import express from "express";
 import axios from "axios";
 import bodyParser from "body-parser";
 import fs from "fs";
 import FormData from "form-data";
 
-import { processNaturalMessage } from "../../ai.js";
 import { transcreverAudio, gerarAudio } from "../../voice.js";
 import { routeDialog } from "./dialogFlows.js";
 import { pushHistory } from "./memory.js";
@@ -15,7 +12,6 @@ import { pushHistory } from "./memory.js";
 const router = express.Router();
 router.use(bodyParser.json());
 
-// ================== VARIÁVEIS ==================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL
   ? `${process.env.RENDER_EXTERNAL_URL}/telegram/webhook`
@@ -25,21 +21,20 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const TELEGRAM_FILE_API = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}`;
 const ENVIAR_AUDIO_RESPOSTA = true;
 
-// ================== CONFIGURAR WEBHOOK ==================
+// ============ CONFIGURAR WEBHOOK ==============
 async function setupWebhook() {
   try {
     await axios.post(`${TELEGRAM_API}/setWebhook`, { url: WEBHOOK_URL });
     console.log(`✅ Webhook do Telegram configurado: ${WEBHOOK_URL}`);
   } catch (err) {
-    console.error("❌ Erro ao configurar webhook:", err.message);
+    console.error("Erro ao configurar webhook:", err.message);
   }
 }
 
-// ================== ESCAPE DE MARKDOWN (Telegram) ==================
-const safe = (txt) =>
-  String(txt || "").replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
+// ========= Safe markdown (Telegram MarkdownV2) =========
+const safe = (txt) => String(txt || "").replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
 
-// ================== RECEBER MENSAGENS ==================
+// ============ RECEBER MENSAGENS ==============
 router.post("/webhook", async (req, res) => {
   const message = req.body.message;
   if (!message) return res.sendStatus(200);
@@ -48,16 +43,13 @@ router.post("/webhook", async (req, res) => {
   let userText = "";
 
   try {
-    // 🎤 Se for áudio → transcreve
+    // 🎙️ Voz → transcrição
     if (message.voice) {
-      console.log("🎧 Recebido áudio, iniciando transcrição...");
       const fileId = message.voice.file_id;
       const fileInfo = await axios.get(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
       const filePath = fileInfo.data.result.file_path;
       const fileUrl = `${TELEGRAM_FILE_API}/${filePath}`;
       userText = await transcreverAudio(fileUrl);
-      console.log("📝 Transcrição:", userText);
-
       if (!userText) {
         await axios.post(`${TELEGRAM_API}/sendMessage`, {
           chat_id: chatId,
@@ -65,69 +57,40 @@ router.post("/webhook", async (req, res) => {
         });
         return res.sendStatus(200);
       }
-    }
-    // 💬 Se for texto → lê normalmente
-    else if (message.text) {
+    } else if (message.text) {
       userText = message.text.trim();
     } else {
       return res.sendStatus(200);
     }
 
-    // 🧠 Armazena histórico mínimo
+    // 🧠 histórico mínimo
     await pushHistory(chatId, { role: "user", text: userText });
 
-    // 1️⃣ Tenta executar fluxos guiados
-    const flowReply = await routeDialog(chatId, userText);
-    if (flowReply && flowReply !== "fallback") {
-      await axios.post(`${TELEGRAM_API}/sendMessage`, {
-        chat_id: chatId,
-        text: safe(flowReply),
-        parse_mode: "MarkdownV2",
-      });
+    // 🎯 processamento principal (fluxo + fallback)
+    const reply = await routeDialog(chatId, userText);
 
-      // 🔊 envia áudio se input foi voz
-      if (ENVIAR_AUDIO_RESPOSTA && message.voice) {
-        const audioPath = await gerarAudio(flowReply);
-        if (audioPath && fs.existsSync(audioPath)) {
-          const form = new FormData();
-          form.append("chat_id", chatId);
-          form.append("voice", fs.createReadStream(audioPath));
-          await axios.post(`${TELEGRAM_API}/sendVoice`, form, {
-            headers: form.getHeaders(),
-          });
-          fs.unlinkSync(audioPath);
-        }
-      }
-      return res.sendStatus(200);
-    }
-
-    // 2️⃣ Fallback → conversa natural (sem ação prática)
-    const natural = await processNaturalMessage({ text: userText });
-    const responseText = natural.reply || "Ok.";
-
+    // resposta textual
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
       chat_id: chatId,
-      text: safe(responseText),
+      text: safe(reply),
       parse_mode: "MarkdownV2",
     });
 
-    // 🔊 áudio da resposta (se veio voz)
+    // resposta em áudio (opcional)
     if (ENVIAR_AUDIO_RESPOSTA && message.voice) {
-      const audioPath = await gerarAudio(responseText);
+      const audioPath = await gerarAudio(reply);
       if (audioPath && fs.existsSync(audioPath)) {
         const form = new FormData();
         form.append("chat_id", chatId);
         form.append("voice", fs.createReadStream(audioPath));
-        await axios.post(`${TELEGRAM_API}/sendVoice`, form, {
-          headers: form.getHeaders(),
-        });
+        await axios.post(`${TELEGRAM_API}/sendVoice`, form, { headers: form.getHeaders() });
         fs.unlinkSync(audioPath);
       }
     }
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Erro no processamento do Telegram:", err);
+    console.error("❌ Erro no processamento do Telegram:", err.message);
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
       chat_id: chatId,
       text: "⚠️ Ocorreu um erro ao processar sua mensagem.",
@@ -136,7 +99,7 @@ router.post("/webhook", async (req, res) => {
   }
 });
 
-// ================== INICIALIZA WEBHOOK ==================
+// inicializa webhook
 setupWebhook();
 
 export default router;
