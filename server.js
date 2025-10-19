@@ -8,14 +8,29 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
 
-// 🔐 chave simples para proteger a execução remota
+// 🔐 Chave simples para proteger execução remota
 const BOT_KEY = process.env.AMANABOT_KEY || "amana_dev_key";
+const PORT = process.env.PORT || 10000;
 
-app.get("/", (_req, res) => {
-  res.send("🔥 Amana_BOT online e funcional!");
+// ✅ Healthcheck para Render (resolve erro 502)
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({
+    status: "ok",
+    service: "Amana_BOT",
+    port: PORT,
+    time: new Date().toISOString(),
+  });
 });
 
-// teste de conectividade com Google APIs
+// Página raiz
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    message: "🔥 Amana_BOT online e funcional!",
+    docs: ["/healthz", "/amana/test", "/telegram/webhook"],
+  });
+});
+
+// 🔍 Teste de conectividade com Google APIs
 app.get("/amana/test", async (_req, res) => {
   try {
     const auth = await authenticateGoogle();
@@ -26,7 +41,7 @@ app.get("/amana/test", async (_req, res) => {
   }
 });
 
-// execução de comandos (SAVE_FILE, SEND_EMAIL, CREATE_EVENT, SAVE_MEMORY)
+// ⚙️ Execução de comandos (SAVE_FILE, SEND_EMAIL, CREATE_EVENT, SAVE_MEMORY)
 app.post("/amana/exec", async (req, res) => {
   try {
     const { key, command, data } = req.body || {};
@@ -40,6 +55,12 @@ app.post("/amana/exec", async (req, res) => {
     res.status(500).json({ status: "erro", message: err.message });
   }
 });
+
+// 📨 Webhook do Telegram
+app.use("/telegram", telegramRouter);
+
+// 🚀 Inicialização
+app.listen(PORT, () => console.log(`🚀 Amana_BOT rodando na porta ${PORT}`));
 
 const PORT = process.env.PORT || 3001;
 app.use("/telegram", telegramRouter);
