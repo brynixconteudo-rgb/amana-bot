@@ -2,8 +2,9 @@
 import express from "express";
 import axios from "axios";
 import bodyParser from "body-parser";
+import fs from "fs";
 import { authenticateGoogle, runCommand } from "./google.js";
-import { processNaturalMessage } from "../../ai.js"; // 👈 integração da IA natural
+import { processNaturalMessage } from "../../ai.js";
 import { transcreverAudio, gerarAudio } from "../../voice.js";
 
 const router = express.Router();
@@ -16,6 +17,8 @@ const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL
   : "https://amana-bot.onrender.com/telegram/webhook";
 
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
+const TELEGRAM_FILE_API = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}`;
+const ENVIAR_AUDIO_RESPOSTA = true; // 👈 Se true, Amana responde também em áudio
 
 // ============ CONFIGURAR WEBHOOK ==============
 async function setupWebhook() {
@@ -30,22 +33,48 @@ async function setupWebhook() {
 // ============ RECEBER MENSAGENS ==============
 router.post("/webhook", async (req, res) => {
   const message = req.body.message;
-  if (!message || !message.text) return res.sendStatus(200);
+  if (!message) return res.sendStatus(200);
 
   const chatId = message.chat.id;
-  const text = message.text.trim();
+  let userText = "";
 
   try {
-    let responseText = "";
+    // 🎙️ Caso seja mensagem de voz
+    if (message.voice) {
+      const fileId = message.voice.file_id;
+      const fileInfo = await axios.get(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
+      const filePath = fileInfo.data.result.file_path;
+      const fileUrl = `${TELEGRAM_FILE_API}/${filePath}`;
+      console.log("🎧 Recebido áudio, iniciando transcrição...");
 
-    // comandos simples
-    if (/^\/start/i.test(text)) {
-      responseText =
-        "🌙 Olá, eu sou o Amana_BOT.\n\nPosso ler seus e-mails, criar eventos, salvar memórias e arquivos.\nDigite um comando simples como:\n\n`/emails` – ver e-mails não lidos\n`/memoria` – registrar uma memória\n`/evento amanhã` – criar evento teste.\n\nOu simplesmente fale comigo naturalmente 🙂";
+      userText = await transcreverAudio(fileUrl);
+      if (!userText) {
+        await axios.post(`${TELEGRAM_API}/sendMessage`, {
+          chat_id: chatId,
+          text: "❌ Não consegui entender o áudio, pode tentar novamente?",
+        });
+        return res.sendStatus(200);
+      }
+      console.log("📝 Transcrição:", userText);
     }
 
-    // leitura de e-mails
-    else if (/^\/emails/i.test(text)) {
+    // 💬 Caso seja texto
+    else if (message.text) {
+      userText = message.text.trim();
+    } else {
+      // ignora outros tipos
+      return res.sendStatus(200);
+    }
+
+    let responseText = "";
+
+    // ============ COMANDOS MANUAIS ============
+    if (/^\/start/i.test(userText)) {
+      responseText =
+        "🌙 Olá, eu sou o Amana_BOT.\n\nPosso ler seus e-mails, criar eventos, salvar memórias e arquivos.\nVocê pode digitar ou enviar um áudio naturalmente. 💬🎧";
+    }
+
+    else if (/^\/emails/i.test(userText)) {
       const auth = await authenticateGoogle();
       const result = await runCommand(auth, "READ_EMAILS", { maxResults: 3 });
       if (result.total === 0) {
@@ -58,59 +87,70 @@ router.post("/webhook", async (req, res) => {
       }
     }
 
-    // salvar memória simples
-    else if (/^\/memoria/i.test(text)) {
-      const frase = text.replace("/memoria", "").trim() || "Memória via Telegram.";
+    else if (/^\/memoria/i.test(userText)) {
+      const frase = userText.replace("/memoria", "").trim() || "Memória via Telegram.";
       const auth = await authenticateGoogle();
       await runCommand(auth, "SAVE_MEMORY", {
         projeto: "TELEGRAM",
         memoria: frase,
-        tags: ["telegram"]
+        tags: ["telegram"],
       });
       responseText = "🧠 Memória registrada com sucesso!";
     }
 
-    // criar evento teste
-    else if (/^\/evento/i.test(text)) {
+    else if (/^\/evento/i.test(userText)) {
       const now = new Date();
       const start = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
-      const end = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
+      const end = new Date(now.getTime() + 2 * 60 * 1000).toISOString();
       const auth = await authenticateGoogle();
       await runCommand(auth, "CREATE_EVENT", {
         summary: "Evento criado via Telegram",
         start,
         end,
-        description: "Evento de teste gerado pelo Amana_BOT via Telegram."
+        description: "Evento criado automaticamente via Amana_BOT.",
       });
       responseText = "📅 Evento criado com sucesso no seu calendário!";
     }
 
-    // fallback → IA natural
+    // 🌐 fallback → IA natural
     else {
-      try {
-        const natural = await processNaturalMessage({ text });
-        responseText = natural.reply || "Ok.";
-      } catch (err) {
-        console.error("Erro na conversa natural:", err.message);
-        responseText = "Tive um probleminha para pensar sobre isso agora 😅";
-      }
+      const natural = await processNaturalMessage({ text: userText });
+      responseText = natural.reply || "Ok.";
     }
 
-    // limpar caracteres problemáticos para MarkdownV2
+    // ============ ENVIO DE RESPOSTA ============
+
+    // função para limpar caracteres problemáticos do Telegram MarkdownV2
     const safe = (txt) => txt.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
 
+    // envia resposta textual
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
       chat_id: chatId,
       text: safe(responseText),
-      parse_mode: "MarkdownV2"
+      parse_mode: "MarkdownV2",
     });
+
+    // se habilitado, também envia resposta em áudio
+    if (ENVIAR_AUDIO_RESPOSTA) {
+      const audioPath = await gerarAudio(responseText);
+      if (audioPath && fs.existsSync(audioPath)) {
+        const audio = fs.createReadStream(audioPath);
+        const form = new FormData();
+        form.append("chat_id", chatId);
+        form.append("voice", audio);
+        await axios.post(`${TELEGRAM_API}/sendVoice`, form, {
+          headers: form.getHeaders(),
+        });
+        fs.unlinkSync(audioPath);
+      }
+    }
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("Erro no processamento do Telegram:", err.message);
+    console.error("❌ Erro no processamento do Telegram:", err.message);
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
-      chat_id: message.chat.id,
-      text: "⚠️ Ocorreu um erro ao processar seu comando."
+      chat_id: chatId,
+      text: "⚠️ Ocorreu um erro ao processar sua mensagem.",
     });
     res.sendStatus(200);
   }
