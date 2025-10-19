@@ -65,7 +65,6 @@ router.post("/webhook", async (req, res) => {
       const fileInfo = await axios.get(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
       const filePath = fileInfo.data.result.file_path;
       const fileUrl = `${TELEGRAM_FILE_API}/${filePath}`;
-      console.log("🎧 Recebido áudio, iniciando transcrição...");
       userText = await transcreverAudio(fileUrl);
       if (!userText) {
         await axios.post(`${TELEGRAM_API}/sendMessage`, {
