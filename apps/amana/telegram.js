@@ -88,11 +88,15 @@ router.post("/webhook", async (req, res) => {
         "Desculpe, não entendi 🤔\nTente um dos comandos:\n`/emails`, `/memoria`, `/evento` ou `/start`.";
     }
 
+  // função para limpar caracteres problemáticos
+    const safe = (txt) =>
+    txt.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
+
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
-      chat_id: chatId,
-      text: responseText,
-      parse_mode: "Markdown"
-    });
+    chat_id: chatId,
+    text: safe(responseText),
+    parse_mode: "MarkdownV2"
+  });
 
     res.sendStatus(200);
   } catch (err) {
