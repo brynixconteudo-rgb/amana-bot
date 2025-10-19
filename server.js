@@ -9,7 +9,7 @@ import { authenticateGoogle, googleTest, runCommand } from "./apps/amana/google.
 import telegramRouter from "./apps/amana/telegram.js";
 
 const app = express();
-app.set("trust proxy", true); // 🔑 essencial p/ Render
+app.set("trust proxy", true); // 🔑 essencial para Render
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
 
@@ -18,7 +18,7 @@ const BOT_KEY = process.env.AMANABOT_KEY || "amana_dev_key";
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = "0.0.0.0"; // 🔑 obrigatório p/ Render expor externamente
 
-// ✅ Healthcheck (obrigatório p/ Render)
+// ✅ Healthcheck detalhado (usado internamente)
 app.get("/healthz", (_req, res) => {
   res.status(200).json({
     status: "ok",
@@ -28,21 +28,13 @@ app.get("/healthz", (_req, res) => {
   });
 });
 
-// 🧩 Evita erro de favicon
-app.get("/favicon.ico", (_req, res) => res.status(204).end());
-
-// 🌍 Página raiz
+// ✅ Healthcheck simples (usado pelo Render)
 app.get("/", (_req, res) => {
-  res.status(200).json({
-    message: "🔥 Amana_BOT online e funcional!",
-    endpoints: {
-      health: "/healthz",
-      test: "/amana/test",
-      telegram: "/telegram/webhook",
-      exec: "/amana/exec",
-    },
-  });
+  res.status(200).send("Amana_BOT OK");
 });
+
+// 🧩 Evita erro de favicon (Render/Browser)
+app.get("/favicon.ico", (_req, res) => res.status(204).end());
 
 // 🔍 Teste de conectividade com Google APIs
 app.get("/amana/test", async (_req, res) => {
@@ -56,7 +48,7 @@ app.get("/amana/test", async (_req, res) => {
   }
 });
 
-// ⚙️ Execução de comandos remotos
+// ⚙️ Execução de comandos remotos (SAVE_FILE, SEND_EMAIL, CREATE_EVENT, SAVE_MEMORY)
 app.post("/amana/exec", async (req, res) => {
   try {
     const { key, command, data } = req.body || {};
@@ -79,7 +71,8 @@ app.use("/telegram", telegramRouter);
 app.listen(PORT, HOST, () => {
   console.log(chalk.cyanBright("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
   console.log(chalk.green(`🚀 Amana_BOT rodando em ${HOST}:${PORT}`));
-  console.log(chalk.greenBright(`✅ Healthcheck ativo em http://${HOST}:${PORT}/healthz`));
-  console.log(chalk.magentaBright(`💬 Webhook Telegram: /telegram/webhook`));
+  console.log(chalk.greenBright(`✅ Healthcheck interno: http://${HOST}:${PORT}/healthz`));
+  console.log(chalk.greenBright(`✅ Healthcheck Render:  http://${HOST}:${PORT}/`));
+  console.log(chalk.magentaBright(`💬 Webhook Telegram:   /telegram/webhook`));
   console.log(chalk.cyanBright("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
 });
