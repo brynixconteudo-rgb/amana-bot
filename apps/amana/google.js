@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { Readable } from "stream";
+import crypto from "crypto";
 
 // ---------- autenticação ----------
 export async function authenticateGoogle() {
@@ -45,20 +46,30 @@ const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
 const SHEETS_SPREADSHEET_ID = process.env.SHEETS_SPREADSHEET_ID;
 
 export async function runCommand(auth, command, data = {}) {
+  let result;
   switch (command) {
     case "SAVE_FILE":
-      return await saveFile(auth, data);
+      result = await saveFile(auth, data);
+      break;
     case "SEND_EMAIL":
-      return await sendEmail(auth, data);
+      result = await sendEmail(auth, data);
+      break;
     case "CREATE_EVENT":
-      return await createEvent(auth, data);
+      result = await createEvent(auth, data);
+      break;
     case "SAVE_MEMORY":
-      return await saveMemory(auth, data);
+      result = await saveMemory(auth, data);
+      break;
     case "READ_EMAILS":
-      return await readEmails(auth, data);
+      result = await readEmails(auth, data);
+      break;
     default:
       throw new Error(`Comando desconhecido: ${command}`);
   }
+
+  // após cada execução, registrar no Amana_INDEX.json
+  await updateIndex(auth, { command, data, result });
+  return result;
 }
 
 // ---------- 1) salvar arquivo no Drive ----------
@@ -139,17 +150,12 @@ async function saveMemory(auth, { projeto = "", memoria = "", tags = [] }) {
   return { projeto, memoria, tags };
 }
 
-// ---------- 5) ler e-mails importantes ----------
+// ---------- 5) ler e-mails ----------
 async function readEmails(auth, { maxResults = 5, query = "is:unread" }) {
   const gmail = google.gmail({ version: "v1", auth });
-  const res = await gmail.users.messages.list({
-    userId: "me",
-    maxResults,
-    q: query
-  });
+  const res = await gmail.users.messages.list({ userId: "me", maxResults, q: query });
   const messages = res.data.messages || [];
   const details = [];
-
   for (const m of messages) {
     const msg = await gmail.users.messages.get({
       userId: "me",
@@ -169,15 +175,68 @@ async function readEmails(auth, { maxResults = 5, query = "is:unread" }) {
       summary: summarizeEmail(headers.Subject)
     });
   }
-
   return { total: details.length, query, emails: details };
 }
 
-// ---------- utilitário de resumo simples ----------
 function summarizeEmail(subject = "") {
   const text = subject.toLowerCase();
   if (text.includes("reunião") || text.includes("agenda")) return "Possível reunião";
   if (text.includes("proposta") || text.includes("contrato")) return "Assunto comercial";
   if (text.includes("fatura") || text.includes("pagamento")) return "Financeiro";
   return "Geral";
+}
+
+// ---------- 6) atualizar Amana_INDEX.json ----------
+async function updateIndex(auth, { command, data, result }) {
+  const drive = google.drive({ version: "v3", auth });
+  const indexName = "Amana_INDEX.json";
+  const hash = crypto.createHash("sha256").update(JSON.stringify({ command, data, result })).digest("hex");
+
+  // buscar se já existe
+  const search = await drive.files.list({
+    q: `name='${indexName}' and '${DRIVE_FOLDER_BASE}' in parents and trashed=false`,
+    fields: "files(id,name)"
+  });
+
+  let indexId;
+  let indexData = { registros: [] };
+
+  if (search.data.files.length > 0) {
+    indexId = search.data.files[0].id;
+    const file = await drive.files.get({ fileId: indexId, alt: "media" });
+    try {
+      indexData = JSON.parse(file.data);
+    } catch {
+      indexData = { registros: [] };
+    }
+  }
+
+  // adiciona novo registro
+  indexData.registros.push({
+    timestamp: new Date().toISOString(),
+    command,
+    data,
+    result,
+    hash
+  });
+
+  const bodyBuffer = Buffer.from(JSON.stringify(indexData, null, 2), "utf-8");
+
+  if (indexId) {
+    await drive.files.update({
+      fileId: indexId,
+      media: { mimeType: "application/json", body: Readable.from(bodyBuffer) }
+    });
+  } else {
+    await drive.files.create({
+      requestBody: {
+        name: indexName,
+        mimeType: "application/json",
+        parents: [DRIVE_FOLDER_BASE]
+      },
+      media: { mimeType: "application/json", body: Readable.from(bodyBuffer) }
+    });
+  }
+
+  return { status: "indexed", total_registros: indexData.registros.length };
 }
