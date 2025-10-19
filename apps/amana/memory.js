@@ -8,6 +8,12 @@ import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 
+// 🧠 Corrigido: base persistente compatível com Render
+// Render monta disco persistente em /var/data
+const BASE_DIR =
+  process.env.MEMORY_DIR ||
+  path.resolve(process.env.PERSISTENT_DIR || "/var/data/memory");
+
 const BASE_DIR = process.env.MEMORY_DIR || "/data/memory";
 
 // ---------- util ----------
