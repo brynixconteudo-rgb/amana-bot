@@ -1,7 +1,9 @@
+// apps/amana/telegram.js
 import express from "express";
 import axios from "axios";
 import bodyParser from "body-parser";
 import { authenticateGoogle, runCommand } from "./google.js";
+import { processNaturalMessage } from "../../ai.js"; // 👈 integração da IA natural
 
 const router = express.Router();
 router.use(bodyParser.json());
@@ -38,7 +40,7 @@ router.post("/webhook", async (req, res) => {
     // comandos simples
     if (/^\/start/i.test(text)) {
       responseText =
-        "🌙 Olá, eu sou o Amana_BOT.\n\nPosso ler seus e-mails, criar eventos, salvar memórias e arquivos.\nDigite um comando simples como:\n\n`/emails` – ver e-mails não lidos\n`/memoria` – registrar uma memória\n`/evento amanhã` – criar evento teste.";
+        "🌙 Olá, eu sou o Amana_BOT.\n\nPosso ler seus e-mails, criar eventos, salvar memórias e arquivos.\nDigite um comando simples como:\n\n`/emails` – ver e-mails não lidos\n`/memoria` – registrar uma memória\n`/evento amanhã` – criar evento teste.\n\nOu simplesmente fale comigo naturalmente 🙂";
     }
 
     // leitura de e-mails
@@ -82,21 +84,25 @@ router.post("/webhook", async (req, res) => {
       responseText = "📅 Evento criado com sucesso no seu calendário!";
     }
 
-    // fallback
+    // fallback → IA natural
     else {
-      responseText =
-        "Desculpe, não entendi 🤔\nTente um dos comandos:\n`/emails`, `/memoria`, `/evento` ou `/start`.";
+      try {
+        const natural = await processNaturalMessage({ text });
+        responseText = natural.reply || "Ok.";
+      } catch (err) {
+        console.error("Erro na conversa natural:", err.message);
+        responseText = "Tive um probleminha para pensar sobre isso agora 😅";
+      }
     }
 
-  // função para limpar caracteres problemáticos
-    const safe = (txt) =>
-    txt.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
+    // limpar caracteres problemáticos para MarkdownV2
+    const safe = (txt) => txt.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
 
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
-    chat_id: chatId,
-    text: safe(responseText),
-    parse_mode: "MarkdownV2"
-  });
+      chat_id: chatId,
+      text: safe(responseText),
+      parse_mode: "MarkdownV2"
+    });
 
     res.sendStatus(200);
   } catch (err) {
