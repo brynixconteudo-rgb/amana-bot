@@ -126,15 +126,11 @@ export async function handleReadEmails(chatId, userText) {
   let nextStage = stage;
   const newFields = { ...fields };
 
-  // 1️⃣ Início
   if (!intent || intent !== "READ_EMAILS") {
     await beginTask(chatId, "READ_EMAILS", {});
     reply = "Quer que eu leia todos os e-mails não lidos ou apenas os mais importantes?";
     nextStage = "awaiting_scope";
-  }
-
-  // 2️⃣ Escopo
-  else if (stage === "awaiting_scope") {
+  } else if (stage === "awaiting_scope") {
     if (userText.toLowerCase().includes("importantes")) {
       newFields.query = "label:important";
       reply = "Perfeito. Quantos e-mails você quer que eu leia?";
@@ -144,10 +140,7 @@ export async function handleReadEmails(chatId, userText) {
       reply = "Ok. Quantos e-mails devo ler?";
       nextStage = "awaiting_quantity";
     }
-  }
-
-  // 3️⃣ Quantidade
-  else if (stage === "awaiting_quantity") {
+  } else if (stage === "awaiting_quantity") {
     const num = parseInt(userText.match(/\d+/)?.[0] || "3", 10);
     const auth = await authenticateGoogle();
     const result = await runCommand(auth, "READ_EMAILS", { maxResults: num, query: newFields.query });
@@ -163,10 +156,7 @@ export async function handleReadEmails(chatId, userText) {
       reply = `📧 *${first.subject}*\n_De ${first.from}_\n\nQuer que eu continue lendo? (sim/não)`;
       nextStage = "awaiting_continue";
     }
-  }
-
-  // 4️⃣ Continua lendo?
-  else if (stage === "awaiting_continue") {
+  } else if (stage === "awaiting_continue") {
     const answer = userText.toLowerCase();
 
     if (answer.includes("sim")) {
@@ -189,10 +179,7 @@ export async function handleReadEmails(chatId, userText) {
       reply = "Não entendi. Deseja continuar lendo os próximos e-mails? (sim/não)";
       nextStage = "awaiting_continue";
     }
-  }
-
-  // 🧩 Fallback
-  else {
+  } else {
     reply = "Vamos recomeçar a leitura dos e-mails?";
     await endTask(chatId);
     nextStage = null;
@@ -215,9 +202,7 @@ export async function handleSendEmail(chatId, userText) {
     await beginTask(chatId, "SEND_EMAIL", {});
     reply = "Claro, para quem devo enviar o e-mail?";
     nextStage = "awaiting_to";
-  }
-
-  else if (stage === "awaiting_to") {
+  } else if (stage === "awaiting_to") {
     const emails = userText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g);
     if (emails && emails.length > 0) {
       newFields.to = emails;
@@ -227,21 +212,15 @@ export async function handleSendEmail(chatId, userText) {
       reply = "Não encontrei e-mails válidos. Pode repetir o destinatário?";
       nextStage = "awaiting_to";
     }
-  }
-
-  else if (stage === "awaiting_subject") {
+  } else if (stage === "awaiting_subject") {
     newFields.subject = userText;
     reply = "E qual será o conteúdo da mensagem?";
     nextStage = "awaiting_body";
-  }
-
-  else if (stage === "awaiting_body") {
+  } else if (stage === "awaiting_body") {
     newFields.body = userText;
     reply = "Posso enviar agora?";
     nextStage = "confirm_send";
-  }
-
-  else if (stage === "confirm_send") {
+  } else if (stage === "confirm_send") {
     if (userText.toLowerCase().includes("sim")) {
       try {
         const auth = await authenticateGoogle();
@@ -257,9 +236,7 @@ export async function handleSendEmail(chatId, userText) {
       await endTask(chatId);
       nextStage = null;
     }
-  }
-
-  else {
+  } else {
     reply = "Quer tentar enviar um novo e-mail?";
     await endTask(chatId);
     nextStage = null;
@@ -282,15 +259,11 @@ export async function handleSaveMemory(chatId, userText) {
     await beginTask(chatId, "SAVE_MEMORY", {});
     reply = "Quer salvar essa memória com algum título?";
     nextStage = "awaiting_title";
-  }
-
-  else if (stage === "awaiting_title") {
+  } else if (stage === "awaiting_title") {
     newFields.title = userText;
     reply = "Perfeito. Qual é o conteúdo que devo registrar?";
     nextStage = "awaiting_content";
-  }
-
-  else if (stage === "awaiting_content") {
+  } else if (stage === "awaiting_content") {
     newFields.content = userText;
     try {
       const auth = await authenticateGoogle();
@@ -301,9 +274,7 @@ export async function handleSaveMemory(chatId, userText) {
     }
     await endTask(chatId);
     nextStage = null;
-  }
-
-  else {
+  } else {
     reply = "Quer registrar outra memória?";
     await endTask(chatId);
     nextStage = null;
@@ -312,28 +283,13 @@ export async function handleSaveMemory(chatId, userText) {
   await updateContext(chatId, { intent: "SAVE_MEMORY", fields: newFields, stage: nextStage });
   return reply;
 }
-// apps/amana/dialogFlows.js
-// 🌐 Motor de diálogo do Amana_BOT (com roteador unificado)
-
-import { updateContext, getDialogState, beginTask, endTask } from "./memory.js";
-import { authenticateGoogle, runCommand } from "./google.js";
-
-// Importações internas dos fluxos
-// (cada função abaixo lida com uma intenção específica)
-export async function handleCreateEvent(chatId, userText) { /* ... */ }
-export async function handleReadEmails(chatId, userText) { /* ... */ }
-export async function handleSendEmail(chatId, userText) { /* ... */ }
-export async function handleSaveMemory(chatId, userText) { /* ... */ }
-
-// 🚨 NÃO ESQUECER: mantenha o conteúdo completo dos handlers acima (a versão estável que enviei antes).
 
 // ============================================================
-// 🧭 FUNÇÃO ROTEADORA PRINCIPAL
+// 🧭 ROTEADOR PRINCIPAL
 // ============================================================
 export async function routeDialog(chatId, userText) {
   const lower = userText.toLowerCase();
 
-  // 🔍 Detecta intenção principal
   if (lower.includes("reuni") || lower.includes("evento") || lower.includes("agendar")) {
     return await handleCreateEvent(chatId, userText);
   }
@@ -350,6 +306,5 @@ export async function routeDialog(chatId, userText) {
     return await handleSaveMemory(chatId, userText);
   }
 
-  // 🔁 Caso nenhuma intenção específica seja reconhecida
   return "Desculpe, não entendi o que deseja fazer. Você pode pedir, por exemplo:\n- 'Agende uma reunião'\n- 'Leia meus e-mails'\n- 'Envie um e-mail'\n- 'Salve uma memória'";
 }
