@@ -14,7 +14,7 @@ const BASE_DIR =
   process.env.MEMORY_DIR ||
   path.resolve(process.env.PERSISTENT_DIR || "/var/data/memory");
 
-const BASE_DIR = process.env.MEMORY_DIR || "/data/memory";
+let BASE_DIR = process.env.MEMORY_DIR || "/data/memory";
 
 // ---------- util ----------
 async function ensureDir(dir) {
