@@ -1,162 +1,146 @@
-// ai.js
-// Camada de Linguagem Natural do Amana_BOT
-// - Interpreta texto livre (ex.: do Telegram) usando OpenAI
-// - Decide entre resposta textual e/ou acionar comandos (Drive/Sheets/Gmail/Calendar)
-// - Executa comando via google.js quando necessário
-//
-// Como usar (no telegram.js):
-//   import { processNaturalMessage } from "../../ai.js";
-//   const { text: userText } = message;
-//   const botReply = await processNaturalMessage({ text: userText });
-//   -> botReply.reply  (mensagem para o usuário)
-//   -> botReply.executedAction (dados opcionais da ação executada)
-//
-// Requisitos:
-//   - Variável de ambiente: OPENAI_API_KEY
-//   - Dependências: axios (já no package.json)
-//   - Integrações existentes: authenticateGoogle/runCommand de apps/amana/google.js
-
+// ai.js — versão corrigida e aprimorada
 import axios from "axios";
 import { authenticateGoogle, runCommand } from "./apps/amana/google.js";
 
-// ---------- Config ----------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-// Instruções do sistema (resumo das regras do Amana_BOT)
+// ---------- PROMPT PRINCIPAL ----------
 const SYSTEM_PROMPT = `
-Você é o Amana_BOT, assistente pessoal conectado ao Google (Drive, Sheets, Gmail, Calendar).
-Sua missão é interpretar linguagem natural e produzir JSONs válidos conforme abaixo.
+Você é o Amana_BOT, assistente pessoal conectado ao Google (Drive, Sheets, Gmail e Calendar).
+Sua função é interpretar pedidos naturais (texto ou voz) e gerar comandos JSON válidos.
 
-Regras:
-1. Entenda instruções em português natural (voz ou texto).
-2. Se houver uma ação (salvar, criar evento, ler e-mail, etc), responda com um JSON contendo:
-   {
-     "reply": "texto curto e humano confirmando",
-     "action": { "command": "...", "data": { ... } }
-   }
-3. Se for apenas conversa, retorne apenas {"reply": "..."}.
-4. A saída deve ser **apenas o JSON válido**, sem textos fora dele.
-5. Nunca invente dados; se faltar algo essencial, peça claramente.
-
-Comandos e formatos esperados:
-- Criar evento:
-  → "CREATE_EVENT" com campos obrigatórios:
-    summary (string), start (ISO), end (ISO), description (string opcional), attendees (array opcional)
-  → Interprete frases como “amanhã às 10 às 12”, “hoje das 9h às 10h”, convertendo para ISO (timezone: America/Sao_Paulo)
-- Ler e-mails:
-  → "READ_EMAILS" com { maxResults, query }
-  → “primeiro e-mail”, “meus dois e-mails mais recentes” → defina maxResults: 1 ou 2 conforme o caso
-- Salvar memória:
-  → "SAVE_MEMORY" com { projeto: "TELEGRAM", memoria: texto resumido, tags: ["telegram"] }
-- Criar arquivo:
-  → "SAVE_FILE" com { name, text, mimeType }
-- Enviar e-mail:
-  → "SEND_EMAIL" com { to, subject, html }
-
-Adaptações comuns:
-- Se o usuário disser “crie uma reunião”, use CREATE_EVENT.
-- Se disser “leia meu primeiro e-mail”, use READ_EMAILS com maxResults: 1.
-- Se disser “registre que o dia está bonito”, use SAVE_MEMORY.
-- Se disser “anote isso”, use SAVE_MEMORY.
-- Se disser “envie um e-mail para Rafael dizendo ...”, use SEND_EMAIL.
-
-Contexto temporal:
-- Use timezone "America/Sao_Paulo".
-- “Hoje” → data atual.
-- “Amanhã” → +1 dia.
-- Intervalos como “das 9h às 11h” → start e end ISO.
-
-A resposta deve ser SEMPRE neste formato:
+Formato de resposta:
 {
   "reply": "texto curto e humano confirmando a ação",
-  "action": { "command": "...", "data": {...} }
+  "action": { "command": "...", "data": { ... } }
 }
+
+Regras:
+- Se for apenas conversa, retorne só {"reply": "..."}.
+- Nunca invente dados; se faltar algo essencial (ex: horário ou pessoa), peça no "reply".
+- Sempre use timezone "America/Sao_Paulo" e formato ISO em datas.
+
+Comandos:
+- "crie uma reunião amanhã das 10 às 12 com Rafael" → CREATE_EVENT { summary, start, end, attendees:["rafael@..."], description }
+- "leia meus dois primeiros e-mails" → READ_EMAILS { maxResults: 2 }
+- "registre uma memória dizendo que o dia está bonito" → SAVE_MEMORY { projeto:"TELEGRAM", memoria:"O dia está bonito", tags:["telegram"] }
+- "salve um arquivo chamado notas.txt com o texto ..." → SAVE_FILE { name, text, mimeType:"text/plain" }
+- "envie um e-mail para Rafael dizendo ..." → SEND_EMAIL { to, subject, html }
+
+Contexto temporal:
+- “Hoje” → data atual; “amanhã” → +1 dia.
+- Intervalos “das 9h às 11h” → start/end ISO com fuso -03:00.
+- Se não houver horário, defina 1h de duração.
+
+A saída deve ser **somente o JSON válido**, sem markdown nem explicações.
 `;
 
-// ---------- Utilitário para extrair JSON robustamente ----------
-function safeParseJson(maybeJson) {
-  if (typeof maybeJson !== "string") return null;
-  const first = maybeJson.indexOf("{");
-  const last = maybeJson.lastIndexOf("}");
+// ---------- JSON seguro ----------
+function safeParseJson(str) {
+  if (typeof str !== "string") return null;
+  const first = str.indexOf("{");
+  const last = str.lastIndexOf("}");
   if (first === -1 || last === -1 || last < first) return null;
-  const slice = maybeJson.slice(first, last + 1);
+  const json = str.slice(first, last + 1);
   try {
-    return JSON.parse(slice);
+    return JSON.parse(json);
   } catch {
     return null;
   }
 }
 
-// ---------- Chamada OpenAI ----------
+// ---------- Chamada à OpenAI ----------
 async function callOpenAI(userText) {
-  if (!OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY ausente no ambiente.");
-  }
-
-  const payload = {
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userText }
-    ]
-  };
-
-  const res = await axios.post(OPENAI_URL, payload, {
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
+  const res = await axios.post(
+    OPENAI_URL,
+    {
+      model: OPENAI_MODEL,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userText }
+      ]
     },
-    timeout: 30000
-  });
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 30000
+    }
+  );
 
   const content = res?.data?.choices?.[0]?.message?.content || "";
   const parsed = safeParseJson(content);
   if (!parsed || typeof parsed.reply !== "string") {
-    // fallback mínimo: retorna resposta textual simples
     return { reply: content?.trim() || "Ok.", action: null };
   }
   return parsed;
 }
 
-// ---------- Execução de ação (se houver) ----------
+// ---------- Execução condicional ----------
 async function maybeExecuteAction(naturalResult) {
   const { action } = naturalResult || {};
-  if (!action || !action.command) return { executedAction: null };
+  if (!action?.command) return { executedAction: null };
 
-  // Autenticar Google e executar via runCommand
   const auth = await authenticateGoogle();
-  const execResult = await runCommand(auth, action.command, action.data || {});
-  return { executedAction: { command: action.command, result: execResult } };
-}
 
-// ---------- API pública ----------
-/**
- * Processa uma mensagem natural (ex.: texto vindo do Telegram)
- * @param {{ text: string }} param0
- * @returns {Promise<{ reply: string, executedAction: null | { command: string, result: any } }>}
- */
-export async function processNaturalMessage({ text }) {
-  if (!text || !text.trim()) {
-    return { reply: "Pode repetir? Não entendi a mensagem.", executedAction: null };
+  // ⚙️ Completa campos obrigatórios ausentes
+  if (action.command === "READ_EMAILS" && !action.data?.maxResults)
+    action.data.maxResults = 3;
+
+  if (action.command === "CREATE_EVENT") {
+    const now = new Date();
+    if (!action.data.start)
+      action.data.start = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+    if (!action.data.end)
+      action.data.end = new Date(now.getTime() + 2 * 60 * 1000).toISOString();
+    if (!action.data.summary)
+      action.data.summary = "Evento criado via Amana_BOT";
   }
 
-  // Chama a OpenAI para interpretar intenção
-  const nl = await callOpenAI(text);
-
-  // Se houver ação (ex.: criar evento), executa de fato
-  const { executedAction } = await maybeExecuteAction(nl);
-
-  // Resposta final para o usuário
-  return {
-    reply: nl.reply || "Ok.",
-    executedAction: executedAction || null
-  };
+  const result = await runCommand(auth, action.command, action.data || {});
+  return { executedAction: { command: action.command, result } };
 }
 
-// ---------- Helper opcional: prompt de depuração local ----------
+// ---------- Função principal ----------
+export async function processNaturalMessage({ text }) {
+  if (!text?.trim())
+    return { reply: "Pode repetir? Não entendi.", executedAction: null };
+
+  const nl = await callOpenAI(text);
+  const { executedAction } = await maybeExecuteAction(nl);
+
+  // 📬 Ajuste de resposta dinâmica pós-execução
+  let reply = nl.reply || "Ok.";
+  if (executedAction) {
+    switch (executedAction.command) {
+      case "CREATE_EVENT":
+        reply = "📅 Reunião criada com sucesso no calendário!";
+        break;
+      case "READ_EMAILS":
+        if (executedAction.result?.emails?.length > 0) {
+          reply =
+            "📨 Aqui estão os e-mails:\n\n" +
+            executedAction.result.emails
+              .map((e, i) => `${i + 1}. ${e.subject || "(sem assunto)"} – ${e.from}`)
+              .join("\n");
+        } else {
+          reply = "📭 Nenhum e-mail encontrado.";
+        }
+        break;
+      case "SAVE_MEMORY":
+        reply = "🧠 Memória registrada com sucesso!";
+        break;
+    }
+  }
+
+  return { reply, executedAction: executedAction || null };
+}
+
+// ---------- Teste local opcional ----------
 export async function debugInterpretationExample() {
   const ex = await callOpenAI("Crie um evento amanhã às 9h com o Rafael sobre proposta X. Me confirme.");
   return ex;
