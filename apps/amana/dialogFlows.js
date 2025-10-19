@@ -1,98 +1,90 @@
 // apps/amana/dialogFlows.js
-// Motor de diálogo guiado: CREATE_EVENT e READ_EMAILS
+// 🌐 Motor de diálogo do Amana_BOT
+// Controla fluxos de conversa baseados em contexto e memória persistente (memory.js)
+// Compatível com autenticação OAuth (não usa Service Account)
 
 import { updateContext, getDialogState, beginTask, endTask } from "./memory.js";
 import { authenticateGoogle, runCommand } from "./google.js";
 
-const TZ = "America/Sao_Paulo";
-
-// Util: parseia datas/horas simples em pt-BR
-function parseTimeRangePT(text) {
-  const t = (text || "").toLowerCase();
-  const now = new Date();
-  let base = new Date(now);
-  if (/amanh(ã|a)/.test(t)) base = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-
-  // das 16h às 17h | às 16h até 17h | 16 às 18 | 16h a 18h
-  const m = t.match(/(?:das?|às?)\s*(\d{1,2})(?::?(\d{2}))?\s*h?\s*(?:a(té|s)?|às?)\s*(\d{1,2})(?::?(\d{2}))?\s*h?/);
-  const m2 = t.match(/(\d{1,2})\s*h?\s*(?:a(té|s)?|às?)\s*(\d{1,2})\s*h?/);
-
-  let sh = null, sm = 0, eh = null, em = 0;
-  if (m) { sh = Number(m[1]); sm = Number(m[2] || 0); eh = Number(m[4]); em = Number(m[5] || 0); }
-  else if (m2) { sh = Number(m2[1]); eh = Number(m2[3]); sm = 0; em = 0; }
-
-  if (sh == null || eh == null) return null;
-
-  const start = new Date(base); start.setHours(sh, sm, 0, 0);
-  const end = new Date(base);   end.setHours(eh, em, 0, 0);
-  return { start: start.toISOString(), end: end.toISOString() };
-}
-
-function extractEmails(text) {
-  const raw = (text || "").split(/[\s,;]+/).map((s) => s.trim());
-  const emails = raw.filter((v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v));
-  if (/apenas\s*eu|só\s*eu|sem\s*convidados/.test((text || "").toLowerCase())) return [];
-  return emails;
-}
-
-// ==================== FLUXO: CRIAR EVENTO ==================== //
+// ============================================================
+// 🗓️ FLUXO: CRIAR EVENTO
+// ============================================================
 export async function handleCreateEvent(chatId, userText) {
   const { intent, fields, stage } = await getDialogState(chatId);
   let reply = "";
   let nextStage = stage;
   const newFields = { ...fields };
 
+  // 1️⃣ Início
   if (!intent || intent !== "CREATE_EVENT") {
-    // inicia fluxo e tenta extrair dados já da primeira fala
     await beginTask(chatId, "CREATE_EVENT", {});
-    const tr = parseTimeRangePT(userText);
-    if (tr) { newFields.start = tr.start; newFields.end = tr.end; }
-    const em = extractEmails(userText); if (em.length >= 0) newFields.attendees = em; // [] = só você
-    if (!newFields.summary) {
-      reply = "Vamos agendar sua reunião. Qual o título do evento?";
-      nextStage = "awaiting_summary";
-    } else {
-      reply = "Qual o dia e horário?";
-      nextStage = "awaiting_time";
-    }
+    reply = "Certo, vamos agendar uma reunião. Qual o título do evento?";
+    nextStage = "awaiting_summary";
   }
+
+  // 2️⃣ Título
   else if (stage === "awaiting_summary") {
     newFields.summary = userText;
-    // se já não tiver horário, pergunta
-    if (!newFields.start || !newFields.end) {
-      reply = "Qual dia e horário da reunião?";
-      nextStage = "awaiting_time";
-    } else {
-      reply = "Quem deve participar? (pode dizer nomes ou e-mails; diga 'apenas eu' para sem convidados)";
-      nextStage = "awaiting_attendees";
-    }
+    reply = "Perfeito. Qual dia e horário da reunião?";
+    nextStage = "awaiting_time";
   }
+
+  // 3️⃣ Data e horário
   else if (stage === "awaiting_time") {
-    const tr = parseTimeRangePT(userText);
-    if (!tr) {
-      reply = "Não entendi o horário. Pode dizer, por exemplo, 'hoje das 16h às 17h' ou 'amanhã às 10h até 11h'?";
-      nextStage = "awaiting_time";
+    const lower = userText.toLowerCase();
+    const now = new Date();
+    let start, end;
+
+    if (lower.includes("amanhã")) {
+      start = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     } else {
-      newFields.start = tr.start; newFields.end = tr.end;
-      reply = "Quem deve participar? (ou diga 'apenas eu')";
-      nextStage = "awaiting_attendees";
+      start = now;
     }
+
+    // Detecta “das 16h às 18h”
+    const match = lower.match(/(\d{1,2})h.*?(\d{1,2})h/);
+    if (match) {
+      const [_, h1, h2] = match;
+      start.setHours(parseInt(h1), 0, 0);
+      end = new Date(start);
+      end.setHours(parseInt(h2), 0, 0);
+    } else {
+      start.setHours(9, 0, 0);
+      end = new Date(start);
+      end.setHours(10, 0, 0);
+    }
+
+    newFields.start = start.toISOString();
+    newFields.end = end.toISOString();
+    reply = "Entendido. Quem deve participar? (pode dizer nomes ou e-mails)";
+    nextStage = "awaiting_attendees";
   }
+
+  // 4️⃣ Participantes
   else if (stage === "awaiting_attendees") {
-    const em = extractEmails(userText);
-    if (em.length === 0 && !/apenas\s*eu|só\s*eu|sem\s*convidados/.test(userText.toLowerCase())) {
-      reply = "Não encontrei e-mails válidos. Pode repetir ou dizer 'apenas eu'?";
-      nextStage = "awaiting_attendees";
-    } else {
-      newFields.attendees = em; // [] → sem convidados
-      reply = "Quer adicionar uma descrição? Se não, diga 'pode criar'.";
+    const emails = userText
+      .split(/[\s,;]+/)
+      .filter((x) => x.includes("@"))
+      .map((x) => x.trim());
+
+    if (emails.length > 0) {
+      newFields.attendees = emails;
+      reply = "Quer adicionar uma descrição ou posso criar o evento agora?";
       nextStage = "awaiting_description";
+    } else if (userText.toLowerCase().includes("sem convidados")) {
+      newFields.attendees = [];
+      reply = "Ok, sem convidados. Deseja adicionar uma descrição ou posso criar o evento agora?";
+      nextStage = "awaiting_description";
+    } else {
+      reply = "Não encontrei e-mails válidos. Pode repetir os endereços?";
+      nextStage = "awaiting_attendees";
     }
   }
+
+  // 5️⃣ Descrição
   else if (stage === "awaiting_description") {
-    const ok = /(pode\s*criar|crie|pode\s*marcar|confirmo|ok|sim)/i.test(userText);
-    if (ok) {
-      reply = "Criando o evento…";
+    if (userText.toLowerCase().includes("crie") || userText.toLowerCase().includes("pode")) {
+      reply = "Tudo certo! Criando o evento...";
       nextStage = "creating_event";
     } else {
       newFields.description = userText;
@@ -100,62 +92,108 @@ export async function handleCreateEvent(chatId, userText) {
       nextStage = "confirm_create";
     }
   }
+
+  // 6️⃣ Criação
   else if (stage === "confirm_create" || stage === "creating_event") {
-    // valida mínimos
-    if (!newFields.summary) { reply = "Preciso do título do evento."; nextStage = "awaiting_summary"; }
-    else if (!newFields.start || !newFields.end) { reply = "Preciso do dia e do horário."; nextStage = "awaiting_time"; }
-    else {
+    try {
       const auth = await authenticateGoogle();
       await runCommand(auth, "CREATE_EVENT", newFields);
-      reply = `📅 Evento criado: *${newFields.summary}*`;
-      await endTask(chatId);
-      nextStage = null;
+      reply = `📅 Evento criado com sucesso: *${newFields.summary}*`;
+    } catch (err) {
+      reply = `❌ Erro ao criar o evento: ${err.message}`;
     }
+    await endTask(chatId);
+    nextStage = null;
   }
+
+  // 🧩 Fallback
   else {
-    reply = "Vamos recomeçar o agendamento? Diga o título do evento.";
-    await beginTask(chatId, "CREATE_EVENT", {});
-    nextStage = "awaiting_summary";
+    reply = "Parece que já tínhamos começado algo, mas não entendi bem. Quer recomeçar o agendamento?";
+    await endTask(chatId);
+    nextStage = null;
   }
 
   await updateContext(chatId, { intent: "CREATE_EVENT", fields: newFields, stage: nextStage });
   return reply;
 }
 
-// ==================== FLUXO: LER EMAILS ==================== //
+// ============================================================
+// 📬 FLUXO: LER EMAILS
+// ============================================================
 export async function handleReadEmails(chatId, userText) {
   const { intent, fields, stage } = await getDialogState(chatId);
   let reply = "";
   let nextStage = stage;
   const newFields = { ...fields };
 
+  // 1️⃣ Início
   if (!intent || intent !== "READ_EMAILS") {
     await beginTask(chatId, "READ_EMAILS", {});
-    reply = "Você quer os e-mails *não lidos* ou os *importantes*?";
+    reply = "Quer que eu leia todos os e-mails não lidos ou apenas os mais importantes?";
     nextStage = "awaiting_scope";
   }
+
+  // 2️⃣ Escopo
   else if (stage === "awaiting_scope") {
-    if (/importantes?/i.test(userText)) {
+    if (userText.toLowerCase().includes("importantes")) {
       newFields.query = "label:important";
-      reply = "Quantos e-mails devo ler?";
+      reply = "Perfeito. Quantos e-mails você quer que eu leia?";
       nextStage = "awaiting_quantity";
     } else {
       newFields.query = "is:unread";
-      reply = "Quantos e-mails devo ler?";
+      reply = "Ok. Quantos e-mails devo ler?";
       nextStage = "awaiting_quantity";
     }
   }
+
+  // 3️⃣ Quantidade
   else if (stage === "awaiting_quantity") {
-    const num = parseInt(userText.match(/\d+/)?.[0] || "1", 10);
+    const num = parseInt(userText.match(/\d+/)?.[0] || "3", 10);
     const auth = await authenticateGoogle();
-    const result = await runCommand(auth, "READ_EMAILS", { maxResults: Math.max(1, num), query: newFields.query });
-    if (!result.emails?.length) reply = "Nenhum e-mail encontrado 📭";
-    else reply = "📬 " + result.emails.map((e) => `• ${e.subject || "(sem assunto)"} — _${e.from || ""}_`).join("\n");
-    await endTask(chatId);
-    nextStage = null;
+    const result = await runCommand(auth, "READ_EMAILS", { maxResults: num, query: newFields.query });
+
+    if (!result.emails || result.emails.length === 0) {
+      reply = "Nenhum e-mail encontrado 📭";
+      await endTask(chatId);
+      nextStage = null;
+    } else {
+      newFields.emails = result.emails;
+      newFields.index = 0;
+      const first = result.emails[0];
+      reply = `📧 *${first.subject}*\n_De ${first.from}_\n\nQuer que eu continue lendo? (sim/não)`;
+      nextStage = "awaiting_continue";
+    }
   }
+
+  // 4️⃣ Continua lendo?
+  else if (stage === "awaiting_continue") {
+    const answer = userText.toLowerCase();
+
+    if (answer.includes("sim")) {
+      const nextIndex = (newFields.index || 0) + 1;
+      if (nextIndex < (newFields.emails?.length || 0)) {
+        const email = newFields.emails[nextIndex];
+        newFields.index = nextIndex;
+        reply = `📧 *${email.subject}*\n_De ${email.from}_\n\nQuer continuar lendo? (sim/não)`;
+        nextStage = "awaiting_continue";
+      } else {
+        reply = "Fim da lista de e-mails 📪";
+        await endTask(chatId);
+        nextStage = null;
+      }
+    } else if (answer.includes("não")) {
+      reply = "Tudo bem 👍 Parando a leitura.";
+      await endTask(chatId);
+      nextStage = null;
+    } else {
+      reply = "Não entendi. Deseja continuar lendo os próximos e-mails? (sim/não)";
+      nextStage = "awaiting_continue";
+    }
+  }
+
+  // 🧩 Fallback
   else {
-    reply = "Quer recomeçar a leitura dos e-mails?";
+    reply = "Vamos recomeçar a leitura dos e-mails?";
     await endTask(chatId);
     nextStage = null;
   }
@@ -164,19 +202,113 @@ export async function handleReadEmails(chatId, userText) {
   return reply;
 }
 
-// ==================== ROTEADOR ==================== //
-export async function routeDialog(chatId, userText) {
-  const { intent } = await getDialogState(chatId);
-  const t = (userText || "").toLowerCase();
+// ============================================================
+// ✉️ FLUXO: ENVIAR EMAIL
+// ============================================================
+export async function handleSendEmail(chatId, userText) {
+  const { intent, fields, stage } = await getDialogState(chatId);
+  let reply = "";
+  let nextStage = stage;
+  const newFields = { ...fields };
 
-  // Se já há fluxo em andamento
-  if (intent === "CREATE_EVENT") return await handleCreateEvent(chatId, userText);
-  if (intent === "READ_EMAILS")  return await handleReadEmails(chatId, userText);
+  if (!intent || intent !== "SEND_EMAIL") {
+    await beginTask(chatId, "SEND_EMAIL", {});
+    reply = "Claro, para quem devo enviar o e-mail?";
+    nextStage = "awaiting_to";
+  }
 
-  // Detecta nova intenção
-  if (/(reuni|evento|agend|marc)/i.test(t)) return await handleCreateEvent(chatId, userText);
-  if (/(email|e-mail)/i.test(t) && /(ler|leia|mostrar|trazer)/i.test(t)) return await handleReadEmails(chatId, userText);
+  else if (stage === "awaiting_to") {
+    const emails = userText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g);
+    if (emails && emails.length > 0) {
+      newFields.to = emails;
+      reply = "Qual será o assunto?";
+      nextStage = "awaiting_subject";
+    } else {
+      reply = "Não encontrei e-mails válidos. Pode repetir o destinatário?";
+      nextStage = "awaiting_to";
+    }
+  }
 
-  // sem fluxo
-  return null;
+  else if (stage === "awaiting_subject") {
+    newFields.subject = userText;
+    reply = "E qual será o conteúdo da mensagem?";
+    nextStage = "awaiting_body";
+  }
+
+  else if (stage === "awaiting_body") {
+    newFields.body = userText;
+    reply = "Posso enviar agora?";
+    nextStage = "confirm_send";
+  }
+
+  else if (stage === "confirm_send") {
+    if (userText.toLowerCase().includes("sim")) {
+      try {
+        const auth = await authenticateGoogle();
+        await runCommand(auth, "SEND_EMAIL", newFields);
+        reply = `📤 E-mail enviado com sucesso para ${newFields.to.join(", ")}`;
+      } catch (err) {
+        reply = `❌ Erro ao enviar o e-mail: ${err.message}`;
+      }
+      await endTask(chatId);
+      nextStage = null;
+    } else {
+      reply = "Tudo bem 👍 E-mail cancelado.";
+      await endTask(chatId);
+      nextStage = null;
+    }
+  }
+
+  else {
+    reply = "Quer tentar enviar um novo e-mail?";
+    await endTask(chatId);
+    nextStage = null;
+  }
+
+  await updateContext(chatId, { intent: "SEND_EMAIL", fields: newFields, stage: nextStage });
+  return reply;
+}
+
+// ============================================================
+// 💾 FLUXO: SALVAR MEMÓRIA
+// ============================================================
+export async function handleSaveMemory(chatId, userText) {
+  const { intent, fields, stage } = await getDialogState(chatId);
+  let reply = "";
+  let nextStage = stage;
+  const newFields = { ...fields };
+
+  if (!intent || intent !== "SAVE_MEMORY") {
+    await beginTask(chatId, "SAVE_MEMORY", {});
+    reply = "Quer salvar essa memória com algum título?";
+    nextStage = "awaiting_title";
+  }
+
+  else if (stage === "awaiting_title") {
+    newFields.title = userText;
+    reply = "Perfeito. Qual é o conteúdo que devo registrar?";
+    nextStage = "awaiting_content";
+  }
+
+  else if (stage === "awaiting_content") {
+    newFields.content = userText;
+    try {
+      const auth = await authenticateGoogle();
+      await runCommand(auth, "SAVE_MEMORY", newFields);
+      reply = `🧠 Memória salva com o título: *${newFields.title}*`;
+    } catch (err) {
+      reply = `❌ Erro ao salvar memória: ${err.message}`;
+    }
+    await endTask(chatId);
+    nextStage = null;
+  }
+
+  else {
+    reply = "Quer registrar outra memória?";
+    await endTask(chatId);
+    nextStage = null;
+  }
+
+  await updateContext(chatId, { intent: "SAVE_MEMORY", fields: newFields, stage: nextStage });
+  return reply;
 }
