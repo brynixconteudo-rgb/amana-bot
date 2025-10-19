@@ -1,10 +1,10 @@
 // server.js
-// 🌐 Núcleo do Amana_BOT — versão estável com healthcheck e logs aprimorados
+// 🌐 Núcleo do Amana_BOT — versão estável Render-ready com logs e healthcheck
 
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
-import chalk from "chalk"; // para logs coloridos
+import chalk from "chalk";
 import { authenticateGoogle, googleTest, runCommand } from "./apps/amana/google.js";
 import telegramRouter from "./apps/amana/telegram.js";
 
@@ -12,11 +12,11 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
 
-// 🔐 Chave simples para proteger execução remota
+// 🔐 Chave simples para exec remota
 const BOT_KEY = process.env.AMANABOT_KEY || "amana_dev_key";
-const PORT = process.env.PORT || 10000;
+const PORT = Number(process.env.PORT) || 10000;
 
-// ✅ Healthcheck para Render
+// ✅ Healthcheck (Render usa isso pra verificar o serviço)
 app.get("/healthz", (_req, res) => {
   res.status(200).json({
     status: "ok",
@@ -26,10 +26,10 @@ app.get("/healthz", (_req, res) => {
   });
 });
 
-// 🧩 Evita erro 404 do favicon
+// 🧩 Evita 404 do favicon
 app.get("/favicon.ico", (_req, res) => res.status(204).end());
 
-// 🌐 Página raiz — resposta viva
+// 🌐 Página raiz
 app.get("/", (_req, res) => {
   res.status(200).json({
     message: "🔥 Amana_BOT online e funcional!",
@@ -74,7 +74,7 @@ app.post("/amana/exec", async (req, res) => {
 app.use("/telegram", telegramRouter);
 
 // 🚀 Inicialização do servidor
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(chalk.cyanBright("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
   console.log(chalk.green(`🚀 Amana_BOT rodando na porta ${PORT}`));
   console.log(chalk.greenBright(`✅ Healthcheck ativo em http://localhost:${PORT}/healthz`));
