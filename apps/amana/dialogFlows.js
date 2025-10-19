@@ -312,3 +312,44 @@ export async function handleSaveMemory(chatId, userText) {
   await updateContext(chatId, { intent: "SAVE_MEMORY", fields: newFields, stage: nextStage });
   return reply;
 }
+// apps/amana/dialogFlows.js
+// 🌐 Motor de diálogo do Amana_BOT (com roteador unificado)
+
+import { updateContext, getDialogState, beginTask, endTask } from "./memory.js";
+import { authenticateGoogle, runCommand } from "./google.js";
+
+// Importações internas dos fluxos
+// (cada função abaixo lida com uma intenção específica)
+export async function handleCreateEvent(chatId, userText) { /* ... */ }
+export async function handleReadEmails(chatId, userText) { /* ... */ }
+export async function handleSendEmail(chatId, userText) { /* ... */ }
+export async function handleSaveMemory(chatId, userText) { /* ... */ }
+
+// 🚨 NÃO ESQUECER: mantenha o conteúdo completo dos handlers acima (a versão estável que enviei antes).
+
+// ============================================================
+// 🧭 FUNÇÃO ROTEADORA PRINCIPAL
+// ============================================================
+export async function routeDialog(chatId, userText) {
+  const lower = userText.toLowerCase();
+
+  // 🔍 Detecta intenção principal
+  if (lower.includes("reuni") || lower.includes("evento") || lower.includes("agendar")) {
+    return await handleCreateEvent(chatId, userText);
+  }
+
+  if (lower.includes("email") && (lower.includes("ler") || lower.includes("leia"))) {
+    return await handleReadEmails(chatId, userText);
+  }
+
+  if (lower.includes("enviar") && lower.includes("email")) {
+    return await handleSendEmail(chatId, userText);
+  }
+
+  if (lower.includes("salvar") || lower.includes("memória") || lower.includes("memoria")) {
+    return await handleSaveMemory(chatId, userText);
+  }
+
+  // 🔁 Caso nenhuma intenção específica seja reconhecida
+  return "Desculpe, não entendi o que deseja fazer. Você pode pedir, por exemplo:\n- 'Agende uma reunião'\n- 'Leia meus e-mails'\n- 'Envie um e-mail'\n- 'Salve uma memória'";
+}
