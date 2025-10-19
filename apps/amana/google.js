@@ -119,20 +119,35 @@ async function sendEmail(auth, { to, cc, bcc, subject, html }) {
 }
 
 // ---------- 3) criar evento no Calendar ----------
+function normalizeEmails(input) {
+  if (!input) return [];
+  const items = Array.isArray(input) ? input : [input];
+  return items
+    .map((v) => (typeof v === "string" ? v.trim() : v?.email?.trim()))
+    .filter(Boolean)
+    // ignora frases tipo "apenas eu", "só eu", nomes sem @ etc.
+    .filter((v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v));
+}
+
 async function createEvent(auth, { summary, start, end, attendees = [], location, description }) {
   const calendar = google.calendar({ version: "v3", auth });
+
+  const cleanAttendees = normalizeEmails(attendees).map((email) => ({ email }));
+
   const event = {
     summary,
     location,
     description,
     start: { dateTime: start },
     end: { dateTime: end },
-    attendees: attendees.map((email) => ({ email })),
-    reminders: { useDefault: true }
+    // só envia attendees se tiver e-mail válido
+    ...(cleanAttendees.length ? { attendees: cleanAttendees } : {}),
+    reminders: { useDefault: true },
   };
+
   const res = await calendar.events.insert({
     calendarId: "primary",
-    requestBody: event
+    requestBody: event,
   });
   return res.data;
 }
