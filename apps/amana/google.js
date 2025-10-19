@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { Readable } from "stream";
 
 // ---------- autenticação ----------
 export async function authenticateGoogle() {
@@ -80,8 +81,7 @@ async function saveFile(
   }
 
   const fileMetadata = { name: name || "sem_nome.txt", parents };
-  const media = { mimeType, body: bodyBuffer };
-
+  const media = { mimeType, body: Readable.from(bodyBuffer) };
   const created = await drive.files.create({
     requestBody: fileMetadata,
     media,
