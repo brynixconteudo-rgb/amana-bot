@@ -1,46 +1,68 @@
-// ai.js — somente interpretação (sem executar ações)
-// Evita conflito com fluxos guiados. Use como fallback de conversa.
+// ai.js
+// 🧠 Núcleo de interpretação semântica do Amana_BOT
+// Analisa mensagens livres e devolve { intent, entities } prontos
+// Usa GPT-4-mini para extrair intenção e dados estruturados
+// Compatível com todos os fluxos (evento, e-mail, memória, leitura de e-mails)
 
-import axios from "axios";
+import OpenAI from "openai";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-const SYSTEM_PROMPT = `
-Você é o Amana_BOT. Responda de forma breve, clara e amigável.
-Se o usuário pedir ações (reunião, e-mail, etc.), **NÃO** execute nem proponha JSON aqui — apenas confirme entendimento em linguagem natural.
-Fluxos e execução são responsabilidade de outro módulo.
-`;
+/**
+ * Analisa uma mensagem do usuário e identifica intenção e entidades
+ * @param {string} userText - Texto original enviado pelo usuário
+ * @returns {Promise<{ intent: string, entities: object, confidence: number }>}
+ */
+export async function analyzeMessage(userText) {
+  try {
+    const prompt = `
+Você é um assistente inteligente que interpreta comandos humanos para automação pessoal.
+Analise a seguinte frase e retorne um JSON com três campos: "intent", "entities" e "confidence".
 
-function safeParseJson(maybeJson) {
-  if (typeof maybeJson !== "string") return null;
-  const first = maybeJson.indexOf("{");
-  const last = maybeJson.lastIndexOf("}");
-  if (first === -1 || last === -1 || last < first) return null;
-  try { return JSON.parse(maybeJson.slice(first, last + 1)); } catch { return null; }
-}
+INTENTS possíveis:
+- CREATE_EVENT → criar reunião, compromisso ou evento
+- READ_EMAILS → ler e-mails, mensagens, verificar caixa de entrada
+- SEND_EMAIL → enviar e-mail
+- SAVE_MEMORY → salvar anotações, memórias, pensamentos
+- UNKNOWN → se não for possível classificar
 
-async function callOpenAI(userText) {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY ausente.");
-  const payload = {
-    model: OPENAI_MODEL,
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userText }
-    ]
-  };
-  const res = await axios.post(OPENAI_URL, payload, {
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    timeout: 30000
-  });
-  const content = res?.data?.choices?.[0]?.message?.content || "";
-  return content?.trim() || "Ok.";
-}
+ENTITIES possíveis:
+- summary: título ou assunto do evento
+- date: data mencionada (ex: "amanhã", "20/10")
+- start: horário de início (ex: "10:00")
+- end: horário de fim (ex: "11:00")
+- attendees: lista de e-mails ou nomes de participantes
+- query: filtro para e-mails (ex: "importantes", "não lidos")
+- to: destinatário(s) de e-mail
+- subject: assunto do e-mail
+- body: corpo da mensagem
+- title: título da memória
+- content: conteúdo da memória
 
-export async function processNaturalMessage({ text }) {
-  if (!text || !text.trim()) return { reply: "Pode repetir? Não entendi.", executedAction: null };
-  const reply = await callOpenAI(text);
-  return { reply, executedAction: null };
+Retorne **apenas** JSON válido, sem texto adicional.
+
+Frase: "${userText}"
+    `;
+
+    const response = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+    });
+
+    const text = response.choices[0].message?.content || "{}";
+    const parsed = JSON.parse(text);
+
+    // Segurança: fallback para caso de erro no modelo
+    return {
+      intent: parsed.intent || "UNKNOWN",
+      entities: parsed.entities || {},
+      confidence: parsed.confidence || 0.5,
+    };
+  } catch (err) {
+    console.error("❌ Erro em analyzeMessage:", err.message);
+    return { intent: "UNKNOWN", entities: {}, confidence: 0 };
+  }
 }
