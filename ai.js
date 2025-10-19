@@ -1,68 +1,52 @@
 // ai.js
-// 🧠 Núcleo de interpretação semântica do Amana_BOT
-// Analisa mensagens livres e devolve { intent, entities } prontos
-// Usa GPT-4-mini para extrair intenção e dados estruturados
-// Compatível com todos os fluxos (evento, e-mail, memória, leitura de e-mails)
+// 💡 Núcleo semântico do Amana_BOT — identifica intenções e entidades no texto do usuário
 
 import OpenAI from "openai";
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-/**
- * Analisa uma mensagem do usuário e identifica intenção e entidades
- * @param {string} userText - Texto original enviado pelo usuário
- * @returns {Promise<{ intent: string, entities: object, confidence: number }>}
- */
-export async function analyzeMessage(userText) {
+// ============================================================
+// 🧠 processNaturalMessage
+// ============================================================
+export async function processNaturalMessage(text) {
   try {
     const prompt = `
-Você é um assistente inteligente que interpreta comandos humanos para automação pessoal.
-Analise a seguinte frase e retorne um JSON com três campos: "intent", "entities" e "confidence".
+    Analise a frase do usuário e extraia:
+    - intent: uma das opções [CREATE_EVENT, READ_EMAILS, SEND_EMAIL, SAVE_MEMORY, UNKNOWN]
+    - entities: campos relevantes (ex: summary, date, time, to, subject, body, title, content)
+    Responda em JSON.
 
-INTENTS possíveis:
-- CREATE_EVENT → criar reunião, compromisso ou evento
-- READ_EMAILS → ler e-mails, mensagens, verificar caixa de entrada
-- SEND_EMAIL → enviar e-mail
-- SAVE_MEMORY → salvar anotações, memórias, pensamentos
-- UNKNOWN → se não for possível classificar
+    Exemplo de saída:
+    {
+      "intent": "CREATE_EVENT",
+      "entities": {
+        "summary": "Reunião geral",
+        "date": "amanhã",
+        "time": "18h às 19h"
+      }
+    }
 
-ENTITIES possíveis:
-- summary: título ou assunto do evento
-- date: data mencionada (ex: "amanhã", "20/10")
-- start: horário de início (ex: "10:00")
-- end: horário de fim (ex: "11:00")
-- attendees: lista de e-mails ou nomes de participantes
-- query: filtro para e-mails (ex: "importantes", "não lidos")
-- to: destinatário(s) de e-mail
-- subject: assunto do e-mail
-- body: corpo da mensagem
-- title: título da memória
-- content: conteúdo da memória
-
-Retorne **apenas** JSON válido, sem texto adicional.
-
-Frase: "${userText}"
+    Frase do usuário: "${text}"
     `;
 
-    const response = await client.chat.completions.create({
+    const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
+      temperature: 0.2,
     });
 
-    const text = response.choices[0].message?.content || "{}";
-    const parsed = JSON.parse(text);
+    const response = completion.choices[0].message.content;
+    const jsonStart = response.indexOf("{");
+    const jsonEnd = response.lastIndexOf("}") + 1;
+    const jsonText = response.slice(jsonStart, jsonEnd);
+    const result = JSON.parse(jsonText);
 
-    // Segurança: fallback para caso de erro no modelo
+    // fallback seguro
     return {
-      intent: parsed.intent || "UNKNOWN",
-      entities: parsed.entities || {},
-      confidence: parsed.confidence || 0.5,
+      intent: result.intent || "UNKNOWN",
+      entities: result.entities || {},
     };
   } catch (err) {
-    console.error("❌ Erro em analyzeMessage:", err.message);
-    return { intent: "UNKNOWN", entities: {}, confidence: 0 };
+    console.error("❌ Erro em processNaturalMessage:", err.message);
+    return { intent: "UNKNOWN", entities: {} };
   }
 }
