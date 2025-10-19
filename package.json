@@ -15,5 +15,7 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "googleapis": "^133.0.0"
+    "axios": "^1.6.7",
+    "qrcode-terminal": "^0.12.0"
   }
 }
