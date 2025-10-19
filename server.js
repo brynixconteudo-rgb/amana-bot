@@ -9,11 +9,11 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
 
-// 🔐 Chave simples para proteger execução remota
+// 🔐 Chave simples
 const BOT_KEY = process.env.AMANABOT_KEY || "amana_dev_key";
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 
-// ✅ Healthcheck para Render (resolve erro 502 e health timeout)
+// ✅ Healthcheck — usado pelo Render
 app.get("/healthz", (_req, res) => {
   res.status(200).json({
     status: "ok",
@@ -23,7 +23,7 @@ app.get("/healthz", (_req, res) => {
   });
 });
 
-// 🌐 Página raiz
+// 🌍 Raiz
 app.get("/", (_req, res) => {
   res.status(200).json({
     message: "🔥 Amana_BOT online e funcional!",
@@ -31,12 +31,12 @@ app.get("/", (_req, res) => {
       health: "/healthz",
       test: "/amana/test",
       telegram: "/telegram/webhook",
-      exec: "/amana/exec"
+      exec: "/amana/exec",
     },
   });
 });
 
-// 🔍 Teste de conectividade com Google APIs
+// 🔍 Teste Google APIs
 app.get("/amana/test", async (_req, res) => {
   try {
     const auth = await authenticateGoogle();
@@ -48,7 +48,7 @@ app.get("/amana/test", async (_req, res) => {
   }
 });
 
-// ⚙️ Execução de comandos (SAVE_FILE, SEND_EMAIL, CREATE_EVENT, SAVE_MEMORY)
+// ⚙️ Execução de comandos
 app.post("/amana/exec", async (req, res) => {
   try {
     const { key, command, data } = req.body || {};
@@ -64,11 +64,11 @@ app.post("/amana/exec", async (req, res) => {
   }
 });
 
-// 📨 Webhook do Telegram
+// 📨 Webhook Telegram
 app.use("/telegram", telegramRouter);
 
-// 🚀 Inicialização do servidor
-app.listen(PORT, () => {
+// 🚀 Inicialização
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Amana_BOT rodando na porta ${PORT}`);
   console.log(`✅ Healthcheck ativo em http://localhost:${PORT}/healthz`);
 });
