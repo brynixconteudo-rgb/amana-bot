@@ -1,0 +1,17 @@
+{
+  "name": "amana-bot",
+  "version": "1.0.0",
+  "description": "Assistente pessoal Amana_BOT integrado a Google Drive, Sheets, Gmail e Calendar via OAuth.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "googleapis": "^133.0.0",
+    "openai": "^4.26.0"
+  }
+}
