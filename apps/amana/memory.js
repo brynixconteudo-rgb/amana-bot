@@ -1,20 +1,20 @@
 // apps/amana/memory.js
 // Persistência de contexto por chatId para o Amana_BOT
 // - Guarda estado de intenção (intent), campos coletados (fields), estágio do diálogo (stage) e histórico curto
-// - Salva em disco: /data/memory/<chatId>.json
+// - Salva em disco: /var/data/memory/<chatId>.json  (persistente no Render)
 // - API: loadContext, saveContext, updateContext, clearContext, pushHistory
 
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 
-// 🧠 Corrigido: base persistente compatível com Render
-// Render monta disco persistente em /var/data
-const BASE_DIR =
-  process.env.MEMORY_DIR ||
-  path.resolve(process.env.PERSISTENT_DIR || "/var/data/memory");
-
-let BASE_DIR = process.env.MEMORY_DIR || "/data/memory";
+// 🧠 BASE GLOBAL E PERSISTENTE
+// Garante que a constante BASE_DIR não seja redeclarada ao importar múltiplas vezes
+if (!globalThis.__AMANA_MEMORY_BASE_DIR__) {
+  const base = process.env.MEMORY_DIR || process.env.PERSISTENT_DIR || "/var/data/memory";
+  globalThis.__AMANA_MEMORY_BASE_DIR__ = path.resolve(base);
+}
+const BASE_DIR = globalThis.__AMANA_MEMORY_BASE_DIR__;
 
 // ---------- util ----------
 async function ensureDir(dir) {
