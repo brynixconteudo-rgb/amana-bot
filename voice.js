@@ -1,30 +1,36 @@
 // voice.js
 // Camada de áudio do Amana_BOT
-// - Converte mensagens de voz recebidas (OGG) em texto (Whisper)
-// - Gera áudio de resposta a partir do texto do Amana_BOT (TTS)
-// - Mantém separação clara entre “interpretação” (ai.js) e “voz”
+// - Transcreve mensagens de voz (OGG → texto) usando Whisper (OpenAI)
+// - Gera áudio de resposta com TTS (gpt-4o-mini-tts)
+// - Evita erro de "form.getHeaders is not a function"
 
-import OpenAI from "openai";
 import fs from "fs";
 import axios from "axios";
+import OpenAI from "openai";
 
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-/** Transcreve áudio de voz (Telegram/WhatsApp) */
+/** 🔊 Transcreve áudio recebido (ex: mensagem de voz do Telegram) */
 export async function transcreverAudio(url) {
   try {
-    const response = await axios.get(url, { responseType: "arraybuffer" });
-    fs.writeFileSync("temp.ogg", response.data);
+    console.log("🎧 Recebido áudio, iniciando transcrição...");
 
+    // Baixa o áudio temporariamente
+    const response = await axios.get(url, { responseType: "arraybuffer" });
+    const filePath = "./temp.ogg";
+    fs.writeFileSync(filePath, response.data);
+
+    // Usa o método nativo da SDK para enviar o stream
     const transcription = await client.audio.transcriptions.create({
-      file: fs.createReadStream("temp.ogg"),
+      file: fs.createReadStream(filePath),
       model: "whisper-1",
-      language: "pt"
+      language: "pt",
     });
 
-    fs.unlinkSync("temp.ogg");
+    fs.unlinkSync(filePath);
+    console.log("📝 Transcrição:", transcription.text);
     return transcription.text;
   } catch (err) {
     console.error("❌ Erro na transcrição de áudio:", err.message);
@@ -32,7 +38,7 @@ export async function transcreverAudio(url) {
   }
 }
 
-/** Gera arquivo de áudio a partir de texto (voz natural Amana) */
+/** 🔈 Gera áudio (voz natural da Amana) a partir de texto */
 export async function gerarAudio(texto) {
   try {
     const outputFile = "./resposta.mp3";
@@ -40,12 +46,14 @@ export async function gerarAudio(texto) {
     const speech = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
       voice: "alloy",
-      input: texto
+      input: texto,
     });
 
+    // Salva o áudio em MP3
     const buffer = Buffer.from(await speech.arrayBuffer());
     fs.writeFileSync(outputFile, buffer);
 
+    console.log("🎤 Áudio gerado:", outputFile);
     return outputFile;
   } catch (err) {
     console.error("❌ Erro ao gerar áudio:", err.message);
