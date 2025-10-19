@@ -4,6 +4,7 @@ import axios from "axios";
 import bodyParser from "body-parser";
 import { authenticateGoogle, runCommand } from "./google.js";
 import { processNaturalMessage } from "../../ai.js"; // 👈 integração da IA natural
+import { transcreverAudio, gerarAudio } from "../../voice.js";
 
 const router = express.Router();
 router.use(bodyParser.json());
