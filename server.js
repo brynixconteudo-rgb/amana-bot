@@ -2,6 +2,7 @@ import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
 import { authenticateGoogle, googleTest, runCommand } from "./apps/amana/google.js";
+import telegramRouter from "./apps/amana/telegram.js";
 
 const app = express();
 app.use(cors());
@@ -41,4 +42,5 @@ app.post("/amana/exec", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
+app.use("/telegram", telegramRouter);
 app.listen(PORT, () => console.log(`🚀 Amana_BOT rodando na porta ${PORT}`));
