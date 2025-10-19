@@ -15,7 +15,7 @@ app.use(bodyParser.json({ limit: "10mb" }));
 
 // 🔐 Chave simples para execução remota
 const BOT_KEY = process.env.AMANABOT_KEY || "amana_dev_key";
-const PORT = Number(process.env.PORT) || 10000;
+const PORT = Number(process.env.PORT) || 8080;
 const HOST = "0.0.0.0"; // 🔑 obrigatório p/ Render expor externamente
 
 // ✅ Healthcheck (obrigatório p/ Render)
