@@ -1,27 +1,19 @@
-// 🌐 Motor de diálogo do Amana_BOT — versão com NLP simplificado
-// Compatível com OAuth (sem Service Account)
+// apps/amana/dialogFlows.js
+// 🌐 Motor de diálogo completo e persistente do Amana_BOT (com logs detalhados)
+// Compatível com autenticação OAuth (não usa Service Account)
 
+import chalk from "chalk";
 import { updateContext, getDialogState, beginTask, endTask } from "./memory.js";
 import { authenticateGoogle, runCommand } from "./google.js";
 
-// ------------------------------------------------------------
-// 🔹 Funções de similaridade e normalização
-// ------------------------------------------------------------
-function normalize(text) {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, ""); // remove acentos
+function logFlow(label, data) {
+  const time = new Date().toISOString();
+  console.log(chalk.gray(`\n🕓 [${time}]`), chalk.yellow(`[${label}]`), chalk.cyan(JSON.stringify(data, null, 2)));
 }
 
-function matches(text, keywords) {
-  const clean = normalize(text);
-  return keywords.some((k) => clean.includes(normalize(k)));
-}
-
-// ------------------------------------------------------------
+// ============================================================
 // 🗓️ CRIAR EVENTO
-// ------------------------------------------------------------
+// ============================================================
 async function handleCreateEvent(chatId, userText) {
   const state = await getDialogState(chatId);
   const intent = state.intent || "CREATE_EVENT";
@@ -30,6 +22,8 @@ async function handleCreateEvent(chatId, userText) {
   let reply = "";
   let nextStage = stage;
   const newFields = { ...fields };
+
+  logFlow("CREATE_EVENT → entrada", { chatId, stage, userText });
 
   if (stage === "start") {
     await beginTask(chatId, intent, {});
@@ -98,13 +92,14 @@ async function handleCreateEvent(chatId, userText) {
     nextStage = null;
   }
 
+  logFlow("CREATE_EVENT → saída", { stage: nextStage, fields: newFields, reply });
   await updateContext(chatId, { intent, fields: newFields, stage: nextStage });
   return reply;
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // 📬 LER EMAILS
-// ------------------------------------------------------------
+// ============================================================
 async function handleReadEmails(chatId, userText) {
   const state = await getDialogState(chatId);
   const intent = state.intent || "READ_EMAILS";
@@ -113,6 +108,8 @@ async function handleReadEmails(chatId, userText) {
   let reply = "";
   let nextStage = stage;
   const newFields = { ...fields };
+
+  logFlow("READ_EMAILS → entrada", { chatId, stage, userText });
 
   if (stage === "start") {
     await beginTask(chatId, intent, {});
@@ -168,34 +165,145 @@ async function handleReadEmails(chatId, userText) {
     nextStage = null;
   }
 
+  logFlow("READ_EMAILS → saída", { stage: nextStage, fields: newFields, reply });
   await updateContext(chatId, { intent, fields: newFields, stage: nextStage });
   return reply;
 }
 
-// ------------------------------------------------------------
-// 🧭 ROTEADOR PRINCIPAL COM INTELIGÊNCIA LEVE
-// ------------------------------------------------------------
-export async function routeDialog(chatId, userText) {
-  const lower = normalize(userText);
-
-  // 1️⃣ Se há contexto ativo → continua o fluxo anterior
+// ============================================================
+// ✉️ ENVIAR EMAIL
+// ============================================================
+async function handleSendEmail(chatId, userText) {
   const state = await getDialogState(chatId);
+  const intent = state.intent || "SEND_EMAIL";
+  const fields = state.fields || {};
+  const stage = state.stage || "start";
+  let reply = "";
+  let nextStage = stage;
+  const newFields = { ...fields };
+
+  logFlow("SEND_EMAIL → entrada", { chatId, stage, userText });
+
+  if (stage === "start") {
+    await beginTask(chatId, intent, {});
+    reply = "Para quem devo enviar o e-mail?";
+    nextStage = "awaiting_to";
+  } else if (stage === "awaiting_to") {
+    const emails = userText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g);
+    if (emails && emails.length > 0) {
+      newFields.to = emails;
+      reply = "Qual será o assunto?";
+      nextStage = "awaiting_subject";
+    } else {
+      reply = "Não encontrei e-mails válidos. Pode repetir o destinatário?";
+      nextStage = "awaiting_to";
+    }
+  } else if (stage === "awaiting_subject") {
+    newFields.subject = userText;
+    reply = "Qual é o conteúdo da mensagem?";
+    nextStage = "awaiting_body";
+  } else if (stage === "awaiting_body") {
+    newFields.body = userText;
+    reply = "Posso enviar agora?";
+    nextStage = "confirm_send";
+  } else if (stage === "confirm_send") {
+    if (userText.toLowerCase().includes("sim")) {
+      try {
+        const auth = await authenticateGoogle();
+        await runCommand(auth, "SEND_EMAIL", newFields);
+        reply = `📤 E-mail enviado com sucesso para ${newFields.to.join(", ")}`;
+      } catch (err) {
+        reply = `❌ Erro ao enviar o e-mail: ${err.message}`;
+      }
+      await endTask(chatId);
+      nextStage = null;
+    } else {
+      reply = "Tudo bem 👍 E-mail cancelado.";
+      await endTask(chatId);
+      nextStage = null;
+    }
+  } else {
+    reply = "Quer tentar enviar um novo e-mail?";
+    await endTask(chatId);
+    nextStage = null;
+  }
+
+  logFlow("SEND_EMAIL → saída", { stage: nextStage, fields: newFields, reply });
+  await updateContext(chatId, { intent, fields: newFields, stage: nextStage });
+  return reply;
+}
+
+// ============================================================
+// 💾 SALVAR MEMÓRIA
+// ============================================================
+async function handleSaveMemory(chatId, userText) {
+  const state = await getDialogState(chatId);
+  const intent = state.intent || "SAVE_MEMORY";
+  const fields = state.fields || {};
+  const stage = state.stage || "start";
+  let reply = "";
+  let nextStage = stage;
+  const newFields = { ...fields };
+
+  logFlow("SAVE_MEMORY → entrada", { chatId, stage, userText });
+
+  if (stage === "start") {
+    await beginTask(chatId, intent, {});
+    reply = "Quer salvar essa memória com algum título?";
+    nextStage = "awaiting_title";
+  } else if (stage === "awaiting_title") {
+    newFields.title = userText;
+    reply = "Qual é o conteúdo que devo registrar?";
+    nextStage = "awaiting_content";
+  } else if (stage === "awaiting_content") {
+    newFields.content = userText;
+    try {
+      const auth = await authenticateGoogle();
+      await runCommand(auth, "SAVE_MEMORY", newFields);
+      reply = `🧠 Memória salva com o título: *${newFields.title}*`;
+    } catch (err) {
+      reply = `❌ Erro ao salvar memória: ${err.message}`;
+    }
+    await endTask(chatId);
+    nextStage = null;
+  } else {
+    reply = "Quer registrar outra memória?";
+    await endTask(chatId);
+    nextStage = null;
+  }
+
+  logFlow("SAVE_MEMORY → saída", { stage: nextStage, fields: newFields, reply });
+  await updateContext(chatId, { intent, fields: newFields, stage: nextStage });
+  return reply;
+}
+
+// ============================================================
+// 🧭 ROTEADOR PRINCIPAL
+// ============================================================
+export async function routeDialog(chatId, userText) {
+  const lower = userText.toLowerCase();
+  const state = await getDialogState(chatId);
+
+  console.log(chalk.gray("\n🧭 routeDialog →"), chalk.blue(JSON.stringify({ chatId, stage: state.stage, intent: state.intent, userText })));
+
   if (state.intent && state.stage) {
     switch (state.intent) {
       case "CREATE_EVENT": return await handleCreateEvent(chatId, userText);
       case "READ_EMAILS": return await handleReadEmails(chatId, userText);
+      case "SEND_EMAIL": return await handleSendEmail(chatId, userText);
+      case "SAVE_MEMORY": return await handleSaveMemory(chatId, userText);
     }
   }
 
-  // 2️⃣ Detecta intenção inicial (com sinônimos e linguagem natural)
-  if (matches(lower, ["reuniao", "agenda", "marcar", "agendar", "encontro", "reuni"])) {
+  if (lower.includes("reuni") || lower.includes("evento") || lower.includes("agendar"))
     return await handleCreateEvent(chatId, userText);
-  }
-
-  if (matches(lower, ["email", "emails", "mensagem", "caixa", "inbox", "ler email", "meus emails", "olha meus emails"])) {
+  if (lower.includes("email") && (lower.includes("ler") || lower.includes("leia")))
     return await handleReadEmails(chatId, userText);
-  }
+  if (lower.includes("enviar") && lower.includes("email"))
+    return await handleSendEmail(chatId, userText);
+  if (lower.includes("salvar") || lower.includes("memória") || lower.includes("memoria"))
+    return await handleSaveMemory(chatId, userText);
 
-  // 3️⃣ Fallback
+  console.log(chalk.red("🧭 Nenhuma intenção reconhecida."));
   return "Desculpe, não entendi o que deseja fazer. Você pode pedir, por exemplo:\n- 'Agende uma reunião'\n- 'Leia meus e-mails'\n- 'Envie um e-mail'\n- 'Salve uma memória'";
 }
