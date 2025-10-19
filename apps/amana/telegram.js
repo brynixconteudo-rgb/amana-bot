@@ -8,7 +8,7 @@ import { processNaturalMessage } from "../../ai.js";
 import { transcreverAudio, gerarAudio } from "../../voice.js";
 import { routeDialog } from "./dialogFlows.js";
 import { pushHistory } from "./memory.js";
-import { analyzeMessage } from "../../ai.js";
+import { processNaturalMessage } from "../../ai.js";
 
 const router = express.Router();
 router.use(bodyParser.json());
