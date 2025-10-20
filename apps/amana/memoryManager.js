@@ -1,7 +1,6 @@
 // apps/amana/memoryManager.js
 // 🧠 Amana Extended Memory System (AEMS)
-// Gerencia memórias estendidas (salvar, listar, restaurar, indexar)
-// Integra-se com toolbox.js (Drive pessoal via OAuth)
+// v1.1 — Correção da listagem (busca dentro de /Memorias)
 
 import fs from "fs";
 import fsp from "fs/promises";
@@ -16,7 +15,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "../../");
 
-const TZ = "America/Sao_Paulo";
 const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
 
 // ======= Auth =======
@@ -35,8 +33,6 @@ function driveUser(auth) {
 }
 
 // ======= Helpers =======
-function newId() { return crypto.randomBytes(8).toString("hex"); }
-
 function nowISO() { return new Date().toISOString(); }
 
 function schemaMemory(project, contextText, chatTurns = []) {
@@ -97,14 +93,16 @@ async function saveMemoryFile(auth, project, textJSON) {
 
 async function listMemories(auth) {
   const drive = driveUser(auth);
+  const folderId = await ensureMemoriaFolder(auth);
   const q = [
-    `'${DRIVE_FOLDER_BASE}' in parents`,
+    `'${folderId}' in parents`,
     "name contains '_CONTEXT.json'",
     "trashed=false",
   ].join(" and ");
   const { data } = await drive.files.list({
     q,
     pageSize: 50,
+    orderBy: "modifiedTime desc",
     fields: "files(id,name,modifiedTime,webViewLink)",
   });
   return data.files || [];
@@ -128,11 +126,15 @@ export async function saveMemory(project, contextText, chatTurns) {
 export async function listAllMemories() {
   const auth = await authUserOAuth();
   const list = await listMemories(auth);
-  console.table(list.map(f => ({
-    name: f.name,
-    updated: f.modifiedTime,
-    link: f.webViewLink,
-  })));
+  if (!list.length) {
+    console.log(chalk.yellow("⚠️ Nenhuma memória encontrada na pasta 'Memorias'."));
+  } else {
+    console.table(list.map(f => ({
+      name: f.name,
+      updated: f.modifiedTime,
+      link: f.webViewLink,
+    })));
+  }
   return list;
 }
 
