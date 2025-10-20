@@ -1,7 +1,7 @@
 // apps/amana/memoryIndex.js
-// 🧠 Amana Memory Index Manager
-// Gerencia o arquivo Amana_INDEX.json no Google Drive (conta pessoal, OAuth).
-// Mantém uma lista global de memórias salvas, com busca e indexação por projeto.
+// 🧠 Amana Memory Index Manager (v2)
+// Compatível com Drive pessoal (OAuth) e integração com memoryManager.
+// Corrige erro index.push is not a function e garante persistência segura.
 
 import fs from "fs";
 import fsp from "fs/promises";
@@ -11,8 +11,9 @@ import crypto from "crypto";
 import { Readable } from "stream";
 import { google } from "googleapis";
 
-// ========================= ENV / CONFIG =========================
+// ========================= CONFIG =========================
 const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
+
 const OAUTH = {
   id: process.env.GOOGLE_OAUTH_CLIENT_ID,
   secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
@@ -25,11 +26,12 @@ if (!DRIVE_FOLDER_BASE) {
   process.exit(1);
 }
 
-// ========================= AUTH HELPERS =========================
+// ========================= AUTH =========================
 async function authUserOAuth() {
   const { id, secret, refresh } = OAUTH;
   if (!id || !secret || !refresh)
     throw new Error("OAuth ausente (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN).");
+
   const oauth2 = new google.auth.OAuth2(id, secret, OAUTH.redirect);
   oauth2.setCredentials({ refresh_token: refresh });
   return oauth2;
@@ -47,7 +49,6 @@ async function getIndexFile(auth) {
     "trashed=false",
     "name='Amana_INDEX.json'",
   ].join(" and ");
-
   const { data } = await drive.files.list({ q, fields: "files(id,name)" });
   return data.files?.[0] || null;
 }
@@ -57,9 +58,10 @@ async function readIndexJSON(auth) {
   const file = await getIndexFile(auth);
   if (!file) return [];
 
-  const res = await drive.files.get({ fileId: file.id, alt: "media" }, { responseType: "text" });
   try {
-    return JSON.parse(res.data);
+    const res = await drive.files.get({ fileId: file.id, alt: "media" }, { responseType: "text" });
+    const data = JSON.parse(res.data);
+    return Array.isArray(data) ? data : (Array.isArray(data.records) ? data.records : []);
   } catch {
     return [];
   }
@@ -69,8 +71,8 @@ async function writeIndexJSON(auth, json) {
   const drive = driveOAuth(auth);
   const body = JSON.stringify(json, null, 2);
   const media = { mimeType: "application/json", body: Readable.from([body]) };
-
   const file = await getIndexFile(auth);
+
   if (file) {
     await drive.files.update({ fileId: file.id, media });
     return file.id;
@@ -87,7 +89,10 @@ async function writeIndexJSON(auth, json) {
 // ========================= MAIN OPS =========================
 async function addToIndex({ project, title, link, size, tags = [], type = "CONTEXT" }) {
   const auth = await authUserOAuth();
-  const index = await readIndexJSON(auth);
+  let index = await readIndexJSON(auth);
+
+  // 🔧 garante que seja array
+  if (!Array.isArray(index)) index = [];
 
   const idMatch = /\/d\/([^/]+)/.exec(link);
   const id = idMatch ? idMatch[1] : crypto.randomBytes(6).toString("hex");
@@ -113,10 +118,12 @@ async function addToIndex({ project, title, link, size, tags = [], type = "CONTE
 async function listIndex() {
   const auth = await authUserOAuth();
   const index = await readIndexJSON(auth);
+
   if (!index.length) {
     console.log(chalk.yellow("Nenhum registro no índice global."));
     return [];
   }
+
   console.table(
     index.map((i) => ({
       project: i.project,
@@ -131,11 +138,13 @@ async function listIndex() {
 async function getProjectIndex(project) {
   const auth = await authUserOAuth();
   const index = await readIndexJSON(auth);
+
   const filtered = index.filter((i) => i.project === project);
   if (!filtered.length) {
     console.log(chalk.yellow(`Nenhum registro encontrado para o projeto '${project}'.`));
     return [];
   }
+
   console.table(
     filtered.map((i) => ({
       title: i.title,
@@ -146,7 +155,7 @@ async function getProjectIndex(project) {
   return filtered;
 }
 
-// ========================= CLI ROUTER =========================
+// ========================= CLI =========================
 async function main() {
   try {
     const args = Object.fromEntries(
@@ -157,7 +166,8 @@ async function main() {
     );
 
     const cmd = args.cmd?.toUpperCase();
-    if (!cmd) throw new Error("Use: node apps/amana/memoryIndex.js --cmd=<ADD_INDEX|LIST_INDEX|GET_PROJECT_INDEX>");
+    if (!cmd)
+      throw new Error("Use: node apps/amana/memoryIndex.js --cmd=<ADD_INDEX|LIST_INDEX|GET_PROJECT_INDEX>");
 
     switch (cmd) {
       case "ADD_INDEX":
