@@ -8,6 +8,7 @@ import fsp from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import { google } from "googleapis";
+import { Readable } from "stream";
 
 const TZ = "America/Sao_Paulo";
 const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
@@ -77,16 +78,27 @@ async function ensureSubfolders(auth) {
     }
   }
   return map;
-}
-
+// ---------- salvar arquivo no Drive com Service Account ----------
 async function saveTextFileSA(auth, { name, text, parentId, mimeType = "text/plain" }) {
   const drive = driveSA(auth);
-  import { Readable } from "stream"; // ... const media = { mimeType, body: Readable.from([text]) };
+  const { Readable } = await import("stream");
+
+  // converte o texto em stream (forma segura e compatível com API do Drive)
+  const media = {
+    mimeType,
+    body: Readable.from([text || ""])
+  };
+
+  // cria o arquivo
   const res = await drive.files.create({
-    requestBody: { name, parents: [parentId || DRIVE_FOLDER_BASE] },
+    requestBody: {
+      name,
+      parents: [parentId || DRIVE_FOLDER_BASE]
+    },
     media,
-    fields: "id,name,webViewLink,parents",
+    fields: "id,name,webViewLink,parents"
   });
+
   return res.data;
 }
 
