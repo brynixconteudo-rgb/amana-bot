@@ -1,6 +1,6 @@
 // apps/amana/memoryManager.js
 // 🧠 Amana Extended Memory System (AEMS)
-// v1.1 — Correção da listagem (busca dentro de /Memorias)
+// v1.2 — Correção de listagem (busca robusta da pasta Memorias no Drive)
 
 import fs from "fs";
 import fsp from "fs/promises";
@@ -60,19 +60,19 @@ function schemaMemory(project, contextText, chatTurns = []) {
 }
 
 // ======= DRIVE OPS =======
-async function ensureMemoriaFolder(auth) {
+async function getOrCreateFolder(auth, name) {
   const drive = driveUser(auth);
   const q = [
     `'${DRIVE_FOLDER_BASE}' in parents`,
     "trashed=false",
     "mimeType='application/vnd.google-apps.folder'",
-    "name='Memorias'",
+    `name='${name}'`,
   ].join(" and ");
   const { data } = await drive.files.list({ q, fields: "files(id,name)" });
   if (data.files?.length) return data.files[0].id;
 
   const res = await drive.files.create({
-    requestBody: { name: "Memorias", mimeType: "application/vnd.google-apps.folder", parents: [DRIVE_FOLDER_BASE] },
+    requestBody: { name, mimeType: "application/vnd.google-apps.folder", parents: [DRIVE_FOLDER_BASE] },
     fields: "id,name",
   });
   return res.data.id;
@@ -80,7 +80,7 @@ async function ensureMemoriaFolder(auth) {
 
 async function saveMemoryFile(auth, project, textJSON) {
   const drive = driveUser(auth);
-  const folderId = await ensureMemoriaFolder(auth);
+  const folderId = await getOrCreateFolder(auth, "Memorias");
   const name = `${nowISO().replace(/[:.]/g, "-")}_${project}_CONTEXT.json`;
   const media = { mimeType: "application/json", body: Readable.from([textJSON]) };
   const res = await drive.files.create({
@@ -93,15 +93,15 @@ async function saveMemoryFile(auth, project, textJSON) {
 
 async function listMemories(auth) {
   const drive = driveUser(auth);
-  const folderId = await ensureMemoriaFolder(auth);
+  const folderId = await getOrCreateFolder(auth, "Memorias");
   const q = [
     `'${folderId}' in parents`,
-    "name contains '_CONTEXT.json'",
     "trashed=false",
+    "mimeType='application/json'",
   ].join(" and ");
   const { data } = await drive.files.list({
     q,
-    pageSize: 50,
+    pageSize: 100,
     orderBy: "modifiedTime desc",
     fields: "files(id,name,modifiedTime,webViewLink)",
   });
@@ -130,6 +130,7 @@ export async function listAllMemories() {
     console.log(chalk.yellow("⚠️ Nenhuma memória encontrada na pasta 'Memorias'."));
   } else {
     console.table(list.map(f => ({
+      id: f.id,
       name: f.name,
       updated: f.modifiedTime,
       link: f.webViewLink,
