@@ -349,6 +349,11 @@ async function main() {
     const cmd  = args.cmd;
     const data = args.data ? JSON.parse(args.data) : {};
     if (!cmd) throw new Error("Use: node apps/amana/toolbox.js --cmd <COMANDO> [--data '{...}']");
+
+    // 🔧 garante que está sempre no root do projeto
+    const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../..");
+    process.chdir(root);
+
     console.log(chalk.cyan(`\n🧰 Executando ${cmd} ...`));
     const out = await runOp(cmd, data);
     console.log(chalk.green("✅ Resultado:"), JSON.stringify(out, null, 2));
@@ -359,6 +364,11 @@ async function main() {
   }
 }
 
-if (process.argv[1] && process.argv[1].endsWith("toolbox.js")) {
+// executa apenas se chamado diretamente via CLI
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith("toolbox.js")) {
   main();
+}
+
+if (typeof module !== "undefined") {
+  module.exports = { runOp };
 }
