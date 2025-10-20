@@ -81,7 +81,7 @@ async function ensureSubfolders(auth) {
 
 async function saveTextFileSA(auth, { name, text, parentId, mimeType = "text/plain" }) {
   const drive = driveSA(auth);
-  const media = { mimeType, body: Buffer.from(text, "utf-8") };
+  import { Readable } from "stream"; // ... const media = { mimeType, body: Readable.from([text]) };
   const res = await drive.files.create({
     requestBody: { name, parents: [parentId || DRIVE_FOLDER_BASE] },
     media,
