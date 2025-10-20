@@ -1,18 +1,32 @@
-// 🧰 Caixa de ferramentas do Amana_BOT — compatível com CommonJS e ESM
-// Suporte completo a Drive (SA), Gmail/Calendar/Sheets (OAuth) e Snapshot
+// apps/amana/toolbox.js
+// 🧰 Caixa de ferramentas do Amana_BOT — Drive (SA), Gmail/Calendar/Sheets (OAuth) e Snapshot
+// - Corrigido upload do Drive para googleapis v131+ (Readable.from)
+// - Auto-chdir para a raiz do projeto (não precisa executar a partir da raiz)
+// - Suporte robusto de credenciais SA (JSON inline, vars separadas, path, arquivo)
 
+// ===== Imports =====
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import chalk from "chalk";
+import { Readable } from "stream";
+import { fileURLToPath } from "url";
 import { google } from "googleapis";
 
-const TZ = "America/Sao_Paulo";
-const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
-const SHEETS_SPREADSHEET_ID = process.env.SHEETS_SPREADSHEET_ID;
+// ===== Caminhos & chdir automático p/ raiz do projeto =====
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// este arquivo está em src/apps/amana/toolbox.js → raiz = ../../
+const PROJECT_ROOT = path.resolve(__dirname, "../../");
+try { process.chdir(PROJECT_ROOT); } catch { /* ok */ }
 
-// -------- OAuth (usuário real) --------
+// ===== Constantes & ENV =====
+const TZ = "America/Sao_Paulo";
+const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;          // pasta base no Drive (ID)
+const SHEETS_SPREADSHEET_ID = process.env.SHEETS_SPREADSHEET_ID;  // opcional
+
+// OAuth (usuário real, para Gmail/Calendar/Sheets)
 const OAUTH = {
   id: process.env.GOOGLE_OAUTH_CLIENT_ID,
   secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
@@ -20,24 +34,53 @@ const OAUTH = {
   redirect: "https://developers.google.com/oauthplayground",
 };
 
-// -------- Service Account (Drive) --------
+// ===== Helpers de credencial SA =====
 async function readSAKeyJSON() {
-  if (process.env.GOOGLE_SA_KEY_JSON) return JSON.parse(process.env.GOOGLE_SA_KEY_JSON);
-  const p = path.resolve("service-account.json");
-  return JSON.parse(await fsp.readFile(p, "utf8"));
+  // 1) JSON inline completo
+  if (process.env.GOOGLE_SA_KEY_JSON) {
+    return JSON.parse(process.env.GOOGLE_SA_KEY_JSON);
+  }
+
+  // 2) Campos separados
+  const clientEmail = process.env.GOOGLE_SA_CLIENT_EMAIL;
+  const privateKeyRaw = process.env.GOOGLE_SA_PRIVATE_KEY;
+  if (clientEmail && privateKeyRaw) {
+    // PRIVATE_KEY pode vir com \n escapado — normaliza
+    const private_key = privateKeyRaw.includes("\\n")
+      ? privateKeyRaw.replaceAll("\\n", "\n")
+      : privateKeyRaw;
+    return {
+      type: "service_account",
+      client_email: clientEmail,
+      private_key,
+    };
+  }
+
+  // 3) Caminho para arquivo credencial
+  const credPath =
+    process.env.GOOGLE_APPLICATION_CREDENTIALS
+      ? path.resolve(process.env.GOOGLE_APPLICATION_CREDENTIALS)
+      : path.resolve(PROJECT_ROOT, "service-account.json");
+
+  const raw = await fsp.readFile(credPath, "utf8");
+  return JSON.parse(raw);
 }
 
-// ======================= AUTH HELPERS =======================
+// ===== Auth =====
 async function authUserOAuth() {
   const { id, secret, refresh } = OAUTH;
-  if (!id || !secret || !refresh) throw new Error("OAuth ausente. Configure GOOGLE_OAUTH_*");
+  if (!id || !secret || !refresh) {
+    throw new Error("OAuth ausente. Configure GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN.");
+  }
   const oauth2 = new google.auth.OAuth2(id, secret, OAUTH.redirect);
   oauth2.setCredentials({ refresh_token: refresh });
   return oauth2;
 }
 
 async function authSAForDrive() {
+  if (!DRIVE_FOLDER_BASE) throw new Error("DRIVE_FOLDER_BASE ausente (ID da pasta do Drive).");
   const { client_email, private_key } = await readSAKeyJSON();
+  if (!client_email || !private_key) throw new Error("Credenciais da Service Account incompletas.");
   const scopes = ["https://www.googleapis.com/auth/drive"];
   const jwt = new google.auth.JWT(client_email, null, private_key, scopes);
   await jwt.authorize();
@@ -48,7 +91,7 @@ function driveSA(auth) {
   return google.drive({ version: "v3", auth });
 }
 
-// ======================= DRIVE HELPERS =======================
+// ===== DRIVE (folders / index / salvar arquivo) =====
 async function ensureSubfolders(auth) {
   const drive = driveSA(auth);
   const want = ["Arquivos", "Logs", "Memorias", "Relatorios", "Transcricoes"];
@@ -56,7 +99,7 @@ async function ensureSubfolders(auth) {
   for (const name of want) {
     const q = [
       `'${DRIVE_FOLDER_BASE}' in parents`,
-      `name='${name}'`,
+      `name='${name.replace(/'/g, "\\'")}'`,
       "trashed=false",
       "mimeType='application/vnd.google-apps.folder'",
     ].join(" and ");
@@ -65,23 +108,41 @@ async function ensureSubfolders(auth) {
       map[name] = data.files[0].id;
     } else {
       const res = await drive.files.create({
-        requestBody: { name, mimeType: "application/vnd.google-apps.folder", parents: [DRIVE_FOLDER_BASE] },
+        requestBody: {
+          name,
+          mimeType: "application/vnd.google-apps.folder",
+          parents: [DRIVE_FOLDER_BASE],
+        },
         fields: "id,name",
       });
       map[name] = res.data.id;
     }
   }
-  return map;
+  return map; // {Arquivos, Logs, ...}
 }
 
+// **CORRIGIDO**: usa Readable.from com v131+
 async function saveTextFileSA(auth, { name, text, parentId, mimeType = "text/plain" }) {
   const drive = driveSA(auth);
-  const media = { mimeType, body: Buffer.from(text, "utf-8") };
+
+  const requestBody = {
+    name,
+    parents: [parentId || DRIVE_FOLDER_BASE],
+  };
+
+  const media = {
+    mimeType,
+    // Readable.from aceita tanto string quanto Buffer; com array evita problemas de .pipe
+    body: Readable.from([text ?? ""]),
+  };
+
   const res = await drive.files.create({
-    requestBody: { name, parents: [parentId || DRIVE_FOLDER_BASE] },
+    requestBody,
     media,
     fields: "id,name,webViewLink,parents",
   });
+
+  if (!res?.data?.id) throw new Error("Falha ao criar arquivo no Drive (sem ID).");
   return res.data;
 }
 
@@ -94,28 +155,42 @@ async function upsertIndexSA(auth, { command, data, result }) {
     `name='${indexName}'`,
     "mimeType!='application/vnd.google-apps.folder'",
   ].join(" and ");
-  const { data: search } = await drive.files.list({ q, fields: "files(id,name)" });
+  const search = await drive.files.list({ q, fields: "files(id,name)" });
 
   let fileId = null;
   let json = { registros: [] };
 
-  if (search.files?.length) {
-    fileId = search.files[0].id;
+  if (search.data.files?.length) {
+    fileId = search.data.files[0].id;
+    // baixa o conteúdo atual
     const file = await drive.files.get({ fileId, alt: "media" }, { responseType: "text" });
     try { json = JSON.parse(file.data); } catch { json = { registros: [] }; }
   }
 
-  const hash = crypto.createHash("sha256").update(JSON.stringify({ command, data, result })).digest("hex");
-  json.registros.push({ timestamp: new Date().toISOString(), command, data, result, hash });
-  const body = Buffer.from(JSON.stringify(json, null, 2), "utf-8");
+  const hash = crypto.createHash("sha256")
+    .update(JSON.stringify({ command, data, result }))
+    .digest("hex");
 
-  const media = { mimeType: "application/json", body: fs.createReadStream(await writeTemp(body)) };
+  json.registros.push({
+    timestamp: new Date().toISOString(),
+    command,
+    data,
+    result,
+    hash,
+  });
+
+  const bodyText = JSON.stringify(json, null, 2);
+  const media = {
+    mimeType: "application/json",
+    body: Readable.from([bodyText]),
+  };
+
   if (fileId) {
-    await drive.files.update({ fileId, media: { mimeType: "application/json", body: Buffer.from(JSON.stringify(json, null, 2)) } });
+    await drive.files.update({ fileId, media });
   } else {
     const created = await drive.files.create({
       requestBody: { name: indexName, parents: [DRIVE_FOLDER_BASE], mimeType: "application/json" },
-      media: { mimeType: "application/json", body: Buffer.from(JSON.stringify(json, null, 2)) },
+      media,
       fields: "id",
     });
     fileId = created.data.id;
@@ -123,14 +198,8 @@ async function upsertIndexSA(auth, { command, data, result }) {
   return { status: "indexed", fileId, total: json.registros.length };
 }
 
-async function writeTemp(buf) {
-  const p = `/tmp/${crypto.randomBytes(6).toString("hex")}.json`;
-  await fsp.writeFile(p, buf);
-  return p;
-}
-
-// ======================= SNAPSHOT (DISCO → DRIVE) =======================
-function sha1(buf) { return crypto.createHash("sha1").update(buf).digest("hex"); }
+// ===== SNAPSHOT (DISCO → DRIVE) =====
+const sha1 = (buf) => crypto.createHash("sha1").update(buf).digest("hex");
 
 async function readIfExists(abs) {
   try { return await fsp.readFile(abs); } catch { return null; }
@@ -142,16 +211,22 @@ async function collectFiles(root, relPaths) {
     const abs = path.resolve(root, rel);
     const buf = await readIfExists(abs);
     if (!buf) continue;
-    items.push({ path: rel, size: buf.length, sha1: sha1(buf), b64: buf.toString("base64") });
+    items.push({
+      path: rel,
+      size: buf.length,
+      sha1: sha1(buf),
+      b64: buf.toString("base64"),
+    });
   }
   return items;
 }
 
 async function buildContextSnapshot() {
-  const root = path.resolve(".");
+  const root = PROJECT_ROOT;
   const curated = [
     "server.js",
     "ai.js",
+    "voice.js",
     "package.json",
     "apps/amana/telegram.js",
     "apps/amana/dialogFlows.js",
@@ -159,12 +234,22 @@ async function buildContextSnapshot() {
     "apps/amana/memory.js",
     "apps/amana/toolbox.js",
   ];
+
   try {
-    const dir = await fsp.readdir("apps/amana");
-    for (const f of dir) if (f.endsWith(".js") && !curated.includes(`apps/amana/${f}`)) curated.push(`apps/amana/${f}`);
-  } catch {}
+    const dir = await fsp.readdir(path.join(root, "apps/amana"));
+    for (const f of dir) {
+      if (f.endsWith(".js") && !curated.includes(`apps/amana/${f}`)) {
+        curated.push(`apps/amana/${f}`);
+      }
+    }
+  } catch { /* ignore */ }
+
   const files = await collectFiles(root, curated);
-  return { snapshot_at: new Date().toISOString(), total_files: files.length, files };
+  return {
+    snapshot_at: new Date().toISOString(),
+    total_files: files.length,
+    files,
+  };
 }
 
 async function saveContextToDrive() {
@@ -189,17 +274,21 @@ async function saveContextToDrive() {
   return { ok: true, fileId: saved.id, webViewLink: saved.webViewLink, total_files: snap.total_files };
 }
 
-// ======================= EMAIL, CALENDAR, SHEETS =======================
+// ===== Gmail / Calendar / Sheets (OAuth) =====
 async function sendEmail({ to, subject, html }) {
   const auth = await authUserOAuth();
   const gmail = google.gmail({ version: "v1", auth });
+
   const hdr = [
     `To: ${to}`,
     "MIME-Version: 1.0",
     "Content-Type: text/html; charset=UTF-8",
     `Subject: ${subject || "(sem assunto)"}`,
   ].join("\n");
-  const raw = Buffer.from(`${hdr}\n\n${html || ""}`).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  const raw = Buffer.from(`${hdr}\n\n${html || ""}`).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
   const { data } = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
   await indexUserOp("SEND_EMAIL", { to, subject }, { id: data.id });
   return { id: data.id };
@@ -208,14 +297,23 @@ async function sendEmail({ to, subject, html }) {
 async function showAgenda({ max = 5 } = {}) {
   const auth = await authUserOAuth();
   const calendar = google.calendar({ version: "v3", auth });
+
   const now = new Date().toISOString();
   const { data } = await calendar.events.list({
-    calendarId: "primary", timeMin: now, maxResults: max, singleEvents: true, orderBy: "startTime",
+    calendarId: "primary",
+    timeMin: now,
+    maxResults: max,
+    singleEvents: true,
+    orderBy: "startTime",
   });
+
   const events = (data.items || []).map(ev => ({
+    id: ev.id,
     summary: ev.summary || "Sem título",
     start: ev.start?.dateTime || ev.start?.date || "?",
+    end: ev.end?.dateTime || ev.end?.date || "?",
   }));
+
   await indexUserOp("SHOW_AGENDA", { max }, { total: events.length });
   return events;
 }
@@ -225,28 +323,30 @@ async function indexUserOp(command, data, result) {
     const sa = await authSAForDrive();
     await upsertIndexSA(sa, { command, data, result });
   } catch (e) {
-    console.warn("[indexUserOp] Falha:", e?.message);
+    console.warn("[indexUserOp] Falha ao indexar:", e?.message);
   }
 }
 
-// ======================= ROUTER =======================
+// ===== Router =====
 async function runOp(cmd, payload = {}) {
   switch ((cmd || "").toUpperCase()) {
     case "SAVE_CONTEXT": return await saveContextToDrive();
-    case "SEND_EMAIL": return await sendEmail(payload);
-    case "SHOW_AGENDA": return await showAgenda(payload);
+    case "SEND_EMAIL":   return await sendEmail(payload);
+    case "SHOW_AGENDA":  return await showAgenda(payload);
     default: throw new Error(`Comando desconhecido: ${cmd}`);
   }
 }
 
-// ======================= CLI EXECUTION =======================
+// ===== CLI =====
 async function main() {
   try {
-    const args = Object.fromEntries(process.argv.slice(2).map(a => {
-      const [k, ...r] = a.replace(/^--/, "").split("=");
-      return [k, r.join("=")];
-    }));
-    const cmd = args.cmd;
+    const args = Object.fromEntries(
+      process.argv.slice(2).map(a => {
+        const [k, ...r] = a.replace(/^--/, "").split("=");
+        return [k, r.join("=")];
+      })
+    );
+    const cmd  = args.cmd;
     const data = args.data ? JSON.parse(args.data) : {};
     if (!cmd) throw new Error("Use: node apps/amana/toolbox.js --cmd <COMANDO> [--data '{...}']");
     console.log(chalk.cyan(`\n🧰 Executando ${cmd} ...`));
@@ -261,8 +361,4 @@ async function main() {
 
 if (process.argv[1] && process.argv[1].endsWith("toolbox.js")) {
   main();
-}
-
-if (typeof module !== "undefined") {
-  module.exports = { runOp };
 }
