@@ -217,20 +217,28 @@ export async function runOp(cmd, payload = {}) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// 🖥️ CLI
-if (import.meta.url === `file://${process.argv[1]}`) {
+// ======================= CLI =======================
+const isMain =
+  process.argv[1] &&
+  (process.argv[1].endsWith("toolbox.js") ||
+    process.argv[1].includes("apps/amana/toolbox.js"));
+
+if (isMain) {
   (async () => {
     try {
       const args = Object.fromEntries(
-        process.argv.slice(2).map(a => {
+        process.argv.slice(2).map((a) => {
           const [k, ...r] = a.replace(/^--/, "").split("=");
           return [k, r.join("=")];
         })
       );
       const cmd = args.cmd;
       const data = args.data ? JSON.parse(args.data) : {};
-      if (!cmd) throw new Error("Use: node apps/amana/toolbox.js --cmd <COMANDO> [--data '{...}']");
+      if (!cmd)
+        throw new Error(
+          "Use: node apps/amana/toolbox.js --cmd <COMANDO> [--data '{...}']"
+        );
+
       console.log(`\n🧰 Executando ${cmd} ...`);
       const out = await runOp(cmd, data);
       console.log("✅ Resultado:", JSON.stringify(out, null, 2));
@@ -241,3 +249,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   })();
 }
+
+// Export compatível tanto com ESM quanto CommonJS
+if (typeof module !== "undefined") module.exports = { runOp };
+export { runOp };
