@@ -5,7 +5,9 @@ import crypto from "crypto";
 
 const TZ = "America/Sao_Paulo";
 
-// ---------- autenticação ----------
+// ============================================================
+// 🔐 AUTENTICAÇÃO GOOGLE VIA OAUTH
+// ============================================================
 export async function authenticateGoogle() {
   const {
     GOOGLE_OAUTH_CLIENT_ID,
@@ -26,7 +28,9 @@ export async function authenticateGoogle() {
   return oauth2Client;
 }
 
-// ---------- teste básico ----------
+// ============================================================
+// 🧩 TESTE DE CONEXÃO
+// ============================================================
 export async function googleTest(auth) {
   const drive = google.drive({ version: "v3", auth });
   const gmail = google.gmail({ version: "v1", auth });
@@ -44,7 +48,9 @@ export async function googleTest(auth) {
   };
 }
 
-// ---------- roteador de comandos ----------
+// ============================================================
+// 🧭 ROTEADOR DE COMANDOS
+// ============================================================
 const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
 const SHEETS_SPREADSHEET_ID = process.env.SHEETS_SPREADSHEET_ID;
 
@@ -57,6 +63,8 @@ export async function runCommand(auth, command, data = {}) {
       result = await sendEmail(auth, data); break;
     case "CREATE_EVENT":
       result = await createEvent(auth, data); break;
+    case "SHOW_AGENDA":
+      result = await showAgenda(auth, data); break;
     case "SAVE_MEMORY":
       result = await saveMemory(auth, data); break;
     case "READ_EMAILS":
@@ -68,7 +76,9 @@ export async function runCommand(auth, command, data = {}) {
   return result;
 }
 
-// ---------- 1) salvar arquivo no Drive ----------
+// ============================================================
+// 1️⃣ SALVAR ARQUIVO NO DRIVE
+// ============================================================
 async function saveFile(auth, { name, mimeType = "text/plain", base64, text, folderId }) {
   const drive = google.drive({ version: "v3", auth });
   const parents = [folderId || DRIVE_FOLDER_BASE].filter(Boolean);
@@ -83,30 +93,37 @@ async function saveFile(auth, { name, mimeType = "text/plain", base64, text, fol
   return created.data;
 }
 
-// ---------- 2) enviar e-mail ----------
-async function sendEmail(auth, { to, cc, bcc, subject, html }) {
+// ============================================================
+// 2️⃣ ENVIAR E-MAIL
+// ============================================================
+async function sendEmail(auth, { to, cc, bcc, subject, html, body }) {
   const gmail = google.gmail({ version: "v1", auth });
   const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
 
-  if (!isEmail(to)) throw new Error("Destinatário inválido. Informe um e-mail válido.");
+  if (!to || (Array.isArray(to) && to.length === 0)) throw new Error("Nenhum destinatário informado.");
 
+  const recipients = Array.isArray(to) ? to.join(", ") : to;
   const headers = [
-    `To: ${to}`,
-    cc && isEmail(cc) ? `Cc: ${cc}` : null,
-    bcc && isEmail(bcc) ? `Bcc: ${bcc}` : null,
+    `To: ${recipients}`,
+    cc ? `Cc: ${cc}` : null,
+    bcc ? `Bcc: ${bcc}` : null,
     "MIME-Version: 1.0",
     "Content-Type: text/html; charset=UTF-8",
     `Subject: ${subject || "(sem assunto)"}`
   ].filter(Boolean).join("\n");
 
-  const message = `${headers}\n\n${html || ""}`;
-  const encodedMessage = Buffer.from(message).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const message = `${headers}\n\n${html || body || ""}`;
+  const encodedMessage = Buffer.from(message)
+    .toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
   const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw: encodedMessage } });
-  return { id: sent.data.id, to, subject };
+  return { id: sent.data.id, to: recipients, subject };
 }
 
-// ---------- 3) criar evento no Calendar ----------
+// ============================================================
+// 3️⃣ CRIAR EVENTO NO CALENDAR
+// ============================================================
 async function createEvent(auth, { summary, start, end, attendees = [], location, description }) {
   const calendar = google.calendar({ version: "v3", auth });
   const cleanEmails = (arr) =>
@@ -130,26 +147,61 @@ async function createEvent(auth, { summary, start, end, attendees = [], location
   return res.data;
 }
 
-// ---------- 4) registrar memória no Sheets ----------
-async function saveMemory(auth, { projeto = "", memoria = "", tags = [] }) {
+// ============================================================
+// 4️⃣ MOSTRAR AGENDA (NOVO)
+// ============================================================
+async function showAgenda(auth, { maxResults = 5 } = {}) {
+  const calendar = google.calendar({ version: "v3", auth });
+  const now = new Date();
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59);
+
+  const res = await calendar.events.list({
+    calendarId: "primary",
+    timeMin: now.toISOString(),
+    timeMax: endOfDay.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults,
+  });
+
+  const events = res.data.items || [];
+  return {
+    events: events.map(ev => ({
+      summary: ev.summary || "Sem título",
+      startTime: ev.start?.dateTime || ev.start?.date,
+      endTime: ev.end?.dateTime || ev.end?.date,
+    })),
+  };
+}
+
+// ============================================================
+// 5️⃣ REGISTRAR MEMÓRIA NO SHEETS
+// ============================================================
+async function saveMemory(auth, { title = "", content = "", tags = [] }) {
   const sheets = google.sheets({ version: "v4", auth });
-  if (!SHEETS_SPREADSHEET_ID) return { projeto, memoria, tags, note: "SHEETS_SPREADSHEET_ID ausente" };
-  const values = [[new Date().toISOString(), projeto, memoria, (tags || []).join(", ")]];
+  if (!SHEETS_SPREADSHEET_ID)
+    return { title, content, tags, note: "SHEETS_SPREADSHEET_ID ausente" };
+
+  const values = [[new Date().toISOString(), title, content, (tags || []).join(", ")]];
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEETS_SPREADSHEET_ID,
     range: "Memoria_Viva!A:D",
     valueInputOption: "RAW",
     requestBody: { values }
   });
-  return { projeto, memoria, tags };
+  return { title, content, tags };
 }
 
-// ---------- 5) ler e-mails ----------
+// ============================================================
+// 6️⃣ LER E-MAILS
+// ============================================================
 async function readEmails(auth, { maxResults = 5, query = "is:unread" }) {
   const gmail = google.gmail({ version: "v1", auth });
   const res = await gmail.users.messages.list({ userId: "me", maxResults, q: query });
   const messages = res.data.messages || [];
   const details = [];
+
   for (const m of messages) {
     const msg = await gmail.users.messages.get({
       userId: "me",
@@ -160,10 +212,13 @@ async function readEmails(auth, { maxResults = 5, query = "is:unread" }) {
     const headers = (msg.data.payload?.headers || []).reduce((acc, h) => (acc[h.name] = h.value, acc), {});
     details.push({ id: m.id, from: headers.From, subject: headers.Subject, date: headers.Date });
   }
+
   return { total: details.length, query, emails: details };
 }
 
-// ---------- 6) atualizar Amana_INDEX.json ----------
+// ============================================================
+// 7️⃣ ATUALIZAR ARQUIVO DE LOG (Amana_INDEX.json)
+// ============================================================
 async function updateIndex(auth, { command, data, result }) {
   const drive = google.drive({ version: "v3", auth });
   const indexName = "Amana_INDEX.json";
@@ -187,10 +242,17 @@ async function updateIndex(auth, { command, data, result }) {
   const bodyBuffer = Buffer.from(JSON.stringify(indexData, null, 2), "utf-8");
 
   if (indexId) {
-    await drive.files.update({ fileId: indexId, media: { mimeType: "application/json", body: Readable.from(bodyBuffer) } });
+    await drive.files.update({
+      fileId: indexId,
+      media: { mimeType: "application/json", body: Readable.from(bodyBuffer) }
+    });
   } else {
     await drive.files.create({
-      requestBody: { name: indexName, mimeType: "application/json", ...(process.env.DRIVE_FOLDER_BASE ? { parents: [process.env.DRIVE_FOLDER_BASE] } : {}) },
+      requestBody: {
+        name: indexName,
+        mimeType: "application/json",
+        ...(process.env.DRIVE_FOLDER_BASE ? { parents: [process.env.DRIVE_FOLDER_BASE] } : {}),
+      },
       media: { mimeType: "application/json", body: Readable.from(bodyBuffer) }
     });
   }
