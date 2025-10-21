@@ -1,185 +1,175 @@
 // apps/amana/memoryManager.js
-// 🧠 Amana Extended Memory System (AEMS)
-// v1.2 — Correção de listagem (busca robusta da pasta Memorias no Drive)
+// 🧠 Gerencia memórias estendidas (salvar, listar, auto-indexar)
 
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
-import crypto from "crypto";
 import chalk from "chalk";
 import { google } from "googleapis";
 import { Readable } from "stream";
-import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const ROOT = path.resolve(__dirname, "../../");
-
+// === CONFIG ===
 const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
+const PROJECT_FOLDER = "Memorias";
+const TZ = "America/Sao_Paulo";
 
-// ======= Auth =======
-async function authUserOAuth() {
-  const id = process.env.GOOGLE_OAUTH_CLIENT_ID;
-  const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  const refresh = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
-  if (!id || !secret || !refresh) throw new Error("OAuth ausente (GOOGLE_OAUTH_*).");
-  const oauth2 = new google.auth.OAuth2(id, secret, "https://developers.google.com/oauthplayground");
-  oauth2.setCredentials({ refresh_token: refresh });
-  return oauth2;
+// === AUTH SERVICE ACCOUNT ===
+async function readSAKeyJSON() {
+  const jsonRaw = process.env.GOOGLE_SA_KEY_JSON || await fsp.readFile("service-account.json", "utf8");
+  return JSON.parse(jsonRaw);
 }
 
-function driveUser(auth) {
+async function authSA() {
+  const { client_email, private_key } = await readSAKeyJSON();
+  const jwt = new google.auth.JWT(client_email, null, private_key, ["https://www.googleapis.com/auth/drive"]);
+  await jwt.authorize();
+  return jwt;
+}
+
+function drive(auth) {
   return google.drive({ version: "v3", auth });
 }
 
-// ======= Helpers =======
-function nowISO() { return new Date().toISOString(); }
-
-function schemaMemory(project, contextText, chatTurns = []) {
-  return {
-    meta: {
-      timestamp: nowISO(),
-      project,
-      author: "Paulo Alessandro",
-      assistant: "Amana",
-      version: "v1.0",
-    },
-    state: {
-      summary: `Contexto ativo do projeto ${project}`,
-      objectives: [],
-      key_decisions: [],
-    },
-    conversation: {
-      turns: chatTurns.map(t => ({
-        role: t.role || "user",
-        message: t.message || "",
-      })),
-    },
-    raw: contextText || "",
-  };
-}
-
-// ======= DRIVE OPS =======
-async function getOrCreateFolder(auth, name) {
-  const drive = driveUser(auth);
+// === DRIVE OPS ===
+async function ensureFolder(auth, name) {
+  const driveAPI = drive(auth);
   const q = [
     `'${DRIVE_FOLDER_BASE}' in parents`,
-    "trashed=false",
-    "mimeType='application/vnd.google-apps.folder'",
     `name='${name}'`,
+    "mimeType='application/vnd.google-apps.folder'",
+    "trashed=false"
   ].join(" and ");
-  const { data } = await drive.files.list({ q, fields: "files(id,name)" });
+  const { data } = await driveAPI.files.list({ q, fields: "files(id)" });
   if (data.files?.length) return data.files[0].id;
 
-  const res = await drive.files.create({
-    requestBody: { name, mimeType: "application/vnd.google-apps.folder", parents: [DRIVE_FOLDER_BASE] },
-    fields: "id,name",
+  const folder = await driveAPI.files.create({
+    requestBody: {
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      parents: [DRIVE_FOLDER_BASE],
+    },
+    fields: "id",
   });
-  return res.data.id;
+  return folder.data.id;
 }
 
-async function saveMemoryFile(auth, project, textJSON) {
-  const drive = driveUser(auth);
-  const folderId = await getOrCreateFolder(auth, "Memorias");
-  const name = `${nowISO().replace(/[:.]/g, "-")}_${project}_CONTEXT.json`;
-  const media = { mimeType: "application/json", body: Readable.from([textJSON]) };
-  const res = await drive.files.create({
-    requestBody: { name, parents: [folderId] },
-    media,
-    fields: "id,name,webViewLink",
+async function saveTextFile(auth, { name, text, parentId, mimeType = "application/json" }) {
+  const driveAPI = drive(auth);
+  const res = await driveAPI.files.create({
+    requestBody: { name, parents: [parentId] },
+    media: { mimeType, body: Readable.from([text]) },
+    fields: "id,name,webViewLink,modifiedTime",
   });
   return res.data;
 }
 
-async function listMemories(auth) {
-  const drive = driveUser(auth);
-  const folderId = await getOrCreateFolder(auth, "Memorias");
+// === INDEX GLOBAL OPS ===
+async function updateGlobalIndex(auth, { project, title, link }) {
+  const driveAPI = drive(auth);
+  const indexName = "Amana_INDEX.json";
   const q = [
-    `'${folderId}' in parents`,
-    "trashed=false",
-    "mimeType='application/json'",
+    `'${DRIVE_FOLDER_BASE}' in parents`,
+    `name='${indexName}'`,
+    "mimeType!='application/vnd.google-apps.folder'",
+    "trashed=false"
   ].join(" and ");
-  const { data } = await drive.files.list({
-    q,
-    pageSize: 100,
-    orderBy: "modifiedTime desc",
+  const search = await driveAPI.files.list({ q, fields: "files(id,name)" });
+
+  let fileId = null;
+  let index = [];
+
+  if (search.data.files?.length) {
+    fileId = search.data.files[0].id;
+    const file = await driveAPI.files.get({ fileId, alt: "media" }, { responseType: "text" });
+    try { index = JSON.parse(file.data); } catch { index = []; }
+  }
+
+  if (!Array.isArray(index)) index = [];
+
+  index.push({
+    project,
+    title,
+    timestamp: new Date().toISOString(),
+    link
+  });
+
+  const body = JSON.stringify(index, null, 2);
+  const media = { mimeType: "application/json", body: Readable.from([body]) };
+
+  if (fileId) {
+    await driveAPI.files.update({ fileId, media });
+  } else {
+    await driveAPI.files.create({
+      requestBody: { name: indexName, parents: [DRIVE_FOLDER_BASE], mimeType: "application/json" },
+      media,
+    });
+  }
+  console.log(chalk.gray(`🔗 Índice global atualizado com: ${project}`));
+}
+
+// === COMANDOS ===
+async function saveMemory({ project, text }) {
+  const auth = await authSA();
+  const folderId = await ensureFolder(auth, PROJECT_FOLDER);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const name = `${timestamp}_${project}_CONTEXT.json`;
+
+  const json = { project, saved_at: new Date().toISOString(), text };
+  const saved = await saveTextFile(auth, { name, text: JSON.stringify(json, null, 2), parentId: folderId });
+
+  // auto-indexação global
+  await updateGlobalIndex(auth, {
+    project,
+    title: `Contexto salvo em ${timestamp}`,
+    link: saved.webViewLink
+  });
+
+  console.log(chalk.green(`🧠 Memória salva: ${saved.webViewLink}`));
+}
+
+async function listMemory() {
+  const auth = await authSA();
+  const driveAPI = drive(auth);
+  const q = [
+    `'${DRIVE_FOLDER_BASE}' in parents`,
+    "mimeType='application/vnd.google-apps.folder'",
+    "trashed=false"
+  ].join(" and ");
+  const { data } = await driveAPI.files.list({ q, fields: "files(id,name)" });
+  const folder = data.files.find(f => f.name === PROJECT_FOLDER);
+  if (!folder) return console.log("Nenhuma memória encontrada.");
+  const list = await driveAPI.files.list({
+    q: `'${folder.id}' in parents and trashed=false`,
     fields: "files(id,name,modifiedTime,webViewLink)",
   });
-  return data.files || [];
+  console.table(list.data.files.map(f => ({
+    id: f.id,
+    name: f.name,
+    updated: f.modifiedTime,
+    link: f.webViewLink
+  })));
 }
 
-async function loadMemory(auth, fileId) {
-  const drive = driveUser(auth);
-  const { data } = await drive.files.get({ fileId, alt: "media" });
-  return JSON.parse(data);
-}
-
-// ======= CORE OPS =======
-export async function saveMemory(project, contextText, chatTurns) {
-  const auth = await authUserOAuth();
-  const json = schemaMemory(project, contextText, chatTurns);
-  const saved = await saveMemoryFile(auth, project, JSON.stringify(json, null, 2));
-  console.log(chalk.green(`🧠 Memória salva:`), saved.webViewLink);
-  return saved;
-}
-
-export async function listAllMemories() {
-  const auth = await authUserOAuth();
-  const list = await listMemories(auth);
-  if (!list.length) {
-    console.log(chalk.yellow("⚠️ Nenhuma memória encontrada na pasta 'Memorias'."));
-  } else {
-    console.table(list.map(f => ({
-      id: f.id,
-      name: f.name,
-      updated: f.modifiedTime,
-      link: f.webViewLink,
-    })));
-  }
-  return list;
-}
-
-export async function loadMemoryById(fileId) {
-  const auth = await authUserOAuth();
-  const data = await loadMemory(auth, fileId);
-  console.log(chalk.cyan(`📖 Memória carregada:`));
-  console.log(JSON.stringify(data, null, 2));
-  return data;
-}
-
-// ======= CLI =======
+// === CLI ===
 async function main() {
   const args = Object.fromEntries(process.argv.slice(2).map(a => {
     const [k, ...r] = a.replace(/^--/, "").split("=");
     return [k, r.join("=")];
   }));
 
-  const cmd = (args.cmd || "").toUpperCase();
-  const project = args.project || "Amana_BOT";
+  const cmd = args.cmd;
+  if (!cmd) throw new Error("Use: node apps/amana/memoryManager.js --cmd=<COMANDO>");
 
-  try {
-    switch (cmd) {
-      case "SAVE_MEMORY":
-        const contextText = args.text || "Memória de teste";
-        await saveMemory(project, contextText, []);
-        break;
-      case "LIST_MEMORY":
-        await listAllMemories();
-        break;
-      case "LOAD_MEMORY":
-        if (!args.id) throw new Error("Passe --id=<fileId>");
-        await loadMemoryById(args.id);
-        break;
-      default:
-        console.log("Use: --cmd=SAVE_MEMORY|LIST_MEMORY|LOAD_MEMORY");
-    }
-  } catch (e) {
-    console.error(chalk.red("❌ Erro:"), e?.message);
-  } finally {
-    process.exit(0);
+  switch (cmd.toUpperCase()) {
+    case "SAVE_MEMORY":
+      await saveMemory({ project: args.project, text: args.text });
+      break;
+    case "LIST_MEMORY":
+      await listMemory();
+      break;
+    default:
+      console.error(chalk.red("❌ Comando desconhecido."));
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith("memoryManager.js")) {
-  main();
-}
+if (process.argv[1].endsWith("memoryManager.js")) main();
