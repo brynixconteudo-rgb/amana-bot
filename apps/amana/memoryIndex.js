@@ -1,7 +1,10 @@
 // apps/amana/memoryIndex.js
-// 🧠 Amana Memory Index Manager (v2)
-// Compatível com Drive pessoal (OAuth) e integração com memoryManager.
-// Corrige erro index.push is not a function e garante persistência segura.
+// 🧠 Amana Memory Index Manager (v3)
+// Compatível com contas pessoais (OAuth) e integração com memoryManager.
+// - Adiciona campo "origin" (manual/auto)
+// - Ordena listagem por data (mais recente primeiro)
+// - Melhora mensagens e logs
+// - Remove dependência de Service Account
 
 import fs from "fs";
 import fsp from "fs/promises";
@@ -61,7 +64,11 @@ async function readIndexJSON(auth) {
   try {
     const res = await drive.files.get({ fileId: file.id, alt: "media" }, { responseType: "text" });
     const data = JSON.parse(res.data);
-    return Array.isArray(data) ? data : (Array.isArray(data.records) ? data.records : []);
+    return Array.isArray(data)
+      ? data
+      : Array.isArray(data.records)
+      ? data.records
+      : [];
   } catch {
     return [];
   }
@@ -78,7 +85,11 @@ async function writeIndexJSON(auth, json) {
     return file.id;
   } else {
     const res = await drive.files.create({
-      requestBody: { name: "Amana_INDEX.json", parents: [DRIVE_FOLDER_BASE], mimeType: "application/json" },
+      requestBody: {
+        name: "Amana_INDEX.json",
+        parents: [DRIVE_FOLDER_BASE],
+        mimeType: "application/json",
+      },
       media,
       fields: "id",
     });
@@ -87,11 +98,9 @@ async function writeIndexJSON(auth, json) {
 }
 
 // ========================= MAIN OPS =========================
-async function addToIndex({ project, title, link, size, tags = [], type = "CONTEXT" }) {
+async function addToIndex({ project, title, link, size, tags = [], type = "CONTEXT", origin = "manual" }) {
   const auth = await authUserOAuth();
   let index = await readIndexJSON(auth);
-
-  // 🔧 garante que seja array
   if (!Array.isArray(index)) index = [];
 
   const idMatch = /\/d\/([^/]+)/.exec(link);
@@ -101,6 +110,7 @@ async function addToIndex({ project, title, link, size, tags = [], type = "CONTE
     id,
     project,
     type,
+    origin, // <-- novo campo
     title,
     link,
     size: size || "unknown",
@@ -109,15 +119,19 @@ async function addToIndex({ project, title, link, size, tags = [], type = "CONTE
   };
 
   index.push(entry);
+  index.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)); // mais recente primeiro
+
   await writeIndexJSON(auth, index);
 
-  console.log(chalk.green("🧩 Índice atualizado:"), project, "→", title);
+  console.log(chalk.green("🧩 Índice atualizado:"), chalk.cyan(project), "→", chalk.yellow(title));
   return entry;
 }
 
 async function listIndex() {
   const auth = await authUserOAuth();
-  const index = await readIndexJSON(auth);
+  let index = await readIndexJSON(auth);
+  if (!Array.isArray(index)) index = [];
+  index.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   if (!index.length) {
     console.log(chalk.yellow("Nenhum registro no índice global."));
@@ -128,6 +142,7 @@ async function listIndex() {
     index.map((i) => ({
       project: i.project,
       title: i.title,
+      origin: i.origin || "-",
       timestamp: i.timestamp,
       link: i.link,
     }))
@@ -137,9 +152,12 @@ async function listIndex() {
 
 async function getProjectIndex(project) {
   const auth = await authUserOAuth();
-  const index = await readIndexJSON(auth);
+  let index = await readIndexJSON(auth);
+  if (!Array.isArray(index)) index = [];
 
   const filtered = index.filter((i) => i.project === project);
+  filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
   if (!filtered.length) {
     console.log(chalk.yellow(`Nenhum registro encontrado para o projeto '${project}'.`));
     return [];
@@ -148,6 +166,7 @@ async function getProjectIndex(project) {
   console.table(
     filtered.map((i) => ({
       title: i.title,
+      origin: i.origin || "-",
       timestamp: i.timestamp,
       link: i.link,
     }))
@@ -177,6 +196,7 @@ async function main() {
           link: args.link,
           tags: args.tags ? args.tags.split(",") : [],
           size: args.size,
+          origin: args.origin || "manual",
         });
         break;
 
