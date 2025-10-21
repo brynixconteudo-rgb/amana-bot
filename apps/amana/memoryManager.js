@@ -1,5 +1,5 @@
 // apps/amana/memoryManager.js
-// 🧠 Gerencia memórias estendidas (salvar, listar, auto-indexar)
+// 🧠 Gerencia memórias estendidas (salvar, listar, auto-indexar com origem)
 
 import fs from "fs";
 import fsp from "fs/promises";
@@ -8,7 +8,6 @@ import chalk from "chalk";
 import { google } from "googleapis";
 import { Readable } from "stream";
 
-// === CONFIG ===
 const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
 const PROJECT_FOLDER = "Memorias";
 const TZ = "America/Sao_Paulo";
@@ -21,7 +20,9 @@ async function readSAKeyJSON() {
 
 async function authSA() {
   const { client_email, private_key } = await readSAKeyJSON();
-  const jwt = new google.auth.JWT(client_email, null, private_key, ["https://www.googleapis.com/auth/drive"]);
+  const jwt = new google.auth.JWT(client_email, null, private_key, [
+    "https://www.googleapis.com/auth/drive",
+  ]);
   await jwt.authorize();
   return jwt;
 }
@@ -30,14 +31,14 @@ function drive(auth) {
   return google.drive({ version: "v3", auth });
 }
 
-// === DRIVE OPS ===
+// === DRIVE HELPERS ===
 async function ensureFolder(auth, name) {
   const driveAPI = drive(auth);
   const q = [
     `'${DRIVE_FOLDER_BASE}' in parents`,
     `name='${name}'`,
     "mimeType='application/vnd.google-apps.folder'",
-    "trashed=false"
+    "trashed=false",
   ].join(" and ");
   const { data } = await driveAPI.files.list({ q, fields: "files(id)" });
   if (data.files?.length) return data.files[0].id;
@@ -63,15 +64,15 @@ async function saveTextFile(auth, { name, text, parentId, mimeType = "applicatio
   return res.data;
 }
 
-// === INDEX GLOBAL OPS ===
-async function updateGlobalIndex(auth, { project, title, link }) {
+// === GLOBAL INDEX OPS ===
+async function updateGlobalIndex(auth, { project, title, link, origin = "auto" }) {
   const driveAPI = drive(auth);
   const indexName = "Amana_INDEX.json";
   const q = [
     `'${DRIVE_FOLDER_BASE}' in parents`,
     `name='${indexName}'`,
     "mimeType!='application/vnd.google-apps.folder'",
-    "trashed=false"
+    "trashed=false",
   ].join(" and ");
   const search = await driveAPI.files.list({ q, fields: "files(id,name)" });
 
@@ -81,7 +82,11 @@ async function updateGlobalIndex(auth, { project, title, link }) {
   if (search.data.files?.length) {
     fileId = search.data.files[0].id;
     const file = await driveAPI.files.get({ fileId, alt: "media" }, { responseType: "text" });
-    try { index = JSON.parse(file.data); } catch { index = []; }
+    try {
+      index = JSON.parse(file.data);
+    } catch {
+      index = [];
+    }
   }
 
   if (!Array.isArray(index)) index = [];
@@ -89,8 +94,9 @@ async function updateGlobalIndex(auth, { project, title, link }) {
   index.push({
     project,
     title,
+    origin, // <— campo novo
     timestamp: new Date().toISOString(),
-    link
+    link,
   });
 
   const body = JSON.stringify(index, null, 2);
@@ -100,11 +106,16 @@ async function updateGlobalIndex(auth, { project, title, link }) {
     await driveAPI.files.update({ fileId, media });
   } else {
     await driveAPI.files.create({
-      requestBody: { name: indexName, parents: [DRIVE_FOLDER_BASE], mimeType: "application/json" },
+      requestBody: {
+        name: indexName,
+        parents: [DRIVE_FOLDER_BASE],
+        mimeType: "application/json",
+      },
       media,
     });
   }
-  console.log(chalk.gray(`🔗 Índice global atualizado com: ${project}`));
+
+  console.log(chalk.gray(`🔗 Índice global atualizado (${origin}): ${project}`));
 }
 
 // === COMANDOS ===
@@ -115,13 +126,17 @@ async function saveMemory({ project, text }) {
   const name = `${timestamp}_${project}_CONTEXT.json`;
 
   const json = { project, saved_at: new Date().toISOString(), text };
-  const saved = await saveTextFile(auth, { name, text: JSON.stringify(json, null, 2), parentId: folderId });
+  const saved = await saveTextFile(auth, {
+    name,
+    text: JSON.stringify(json, null, 2),
+    parentId: folderId,
+  });
 
-  // auto-indexação global
   await updateGlobalIndex(auth, {
     project,
     title: `Contexto salvo em ${timestamp}`,
-    link: saved.webViewLink
+    link: saved.webViewLink,
+    origin: "auto",
   });
 
   console.log(chalk.green(`🧠 Memória salva: ${saved.webViewLink}`));
@@ -133,29 +148,33 @@ async function listMemory() {
   const q = [
     `'${DRIVE_FOLDER_BASE}' in parents`,
     "mimeType='application/vnd.google-apps.folder'",
-    "trashed=false"
+    "trashed=false",
   ].join(" and ");
   const { data } = await driveAPI.files.list({ q, fields: "files(id,name)" });
-  const folder = data.files.find(f => f.name === PROJECT_FOLDER);
+  const folder = data.files.find((f) => f.name === PROJECT_FOLDER);
   if (!folder) return console.log("Nenhuma memória encontrada.");
   const list = await driveAPI.files.list({
     q: `'${folder.id}' in parents and trashed=false`,
     fields: "files(id,name,modifiedTime,webViewLink)",
   });
-  console.table(list.data.files.map(f => ({
-    id: f.id,
-    name: f.name,
-    updated: f.modifiedTime,
-    link: f.webViewLink
-  })));
+  console.table(
+    list.data.files.map((f) => ({
+      id: f.id,
+      name: f.name,
+      updated: f.modifiedTime,
+      link: f.webViewLink,
+    }))
+  );
 }
 
 // === CLI ===
 async function main() {
-  const args = Object.fromEntries(process.argv.slice(2).map(a => {
-    const [k, ...r] = a.replace(/^--/, "").split("=");
-    return [k, r.join("=")];
-  }));
+  const args = Object.fromEntries(
+    process.argv.slice(2).map((a) => {
+      const [k, ...r] = a.replace(/^--/, "").split("=");
+      return [k, r.join("=")];
+    })
+  );
 
   const cmd = args.cmd;
   if (!cmd) throw new Error("Use: node apps/amana/memoryManager.js --cmd=<COMANDO>");
