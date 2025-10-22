@@ -1,7 +1,7 @@
 // apps/amana/restoreContext.js
 // 🧠 Amana – Restore Context (Drive OAuth)
-// - Lista e carrega memórias *_CONTEXT.json do Drive (pasta DRIVE_FOLDER_BASE)
-// - Também integra com o índice global (Amana_INDEX.json) para carregar por projeto
+// - Lista e carrega memórias *_CONTEXT.json do Drive (inclui subpastas padrão)
+// - Integra com o índice global (Amana_INDEX.json) para restaurar por projeto
 // - Salva o contexto ativo em ./_runtime/context_active.json
 // - Mostra as últimas 10 linhas do JSON restaurado para conferência
 //
@@ -11,8 +11,8 @@
 //   node apps/amana/restoreContext.js --cmd=LIST_PROJECTS
 //   node apps/amana/restoreContext.js --cmd=LOAD_PROJECT --project="AEMS_TEST"
 //
-// Requisitos ENV (OAuth conta pessoal):
-//   DRIVE_FOLDER_BASE=...            # ID da pasta raiz onde salvamos tudo
+// ENV necessários (OAuth conta pessoal):
+//   DRIVE_FOLDER_BASE=... (pasta raiz do Amana_BOT)
 //   GOOGLE_OAUTH_CLIENT_ID=...
 //   GOOGLE_OAUTH_CLIENT_SECRET=...
 //   GOOGLE_OAUTH_REFRESH_TOKEN=...
@@ -24,14 +24,13 @@ import chalk from "chalk";
 import { fileURLToPath } from "url";
 import { google } from "googleapis";
 
-// ---------- chdir para a raiz do projeto (este arquivo fica em src/apps/amana) ----------
+// ---------- chdir para a raiz ----------
 const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-// raiz provável: 2 níveis acima de /apps/amana
+const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "../../");
-try { process.chdir(PROJECT_ROOT); } catch { /* ok */ }
+try { process.chdir(PROJECT_ROOT); } catch {}
 
-// ---------- ENV / Constantes ----------
+// ---------- ENV ----------
 const DRIVE_FOLDER_BASE = process.env.DRIVE_FOLDER_BASE;
 const OAUTH = {
   id: process.env.GOOGLE_OAUTH_CLIENT_ID,
@@ -39,7 +38,6 @@ const OAUTH = {
   refresh: process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
   redirect: "https://developers.google.com/oauthplayground",
 };
-
 if (!DRIVE_FOLDER_BASE) {
   console.error(chalk.red("❌ ERRO: DRIVE_FOLDER_BASE não configurado."));
   process.exit(1);
@@ -49,7 +47,7 @@ if (!OAUTH.id || !OAUTH.secret || !OAUTH.refresh) {
   process.exit(1);
 }
 
-// ---------- Auth ----------
+// ---------- AUTH ----------
 async function authUserOAuth() {
   const oauth2 = new google.auth.OAuth2(OAUTH.id, OAUTH.secret, OAUTH.redirect);
   oauth2.setCredentials({ refresh_token: OAUTH.refresh });
@@ -59,7 +57,7 @@ function driveOAuth(auth) {
   return google.drive({ version: "v3", auth });
 }
 
-// ---------- Helpers ----------
+// ---------- HELPERS ----------
 function ensureRuntimePath() {
   const p = path.resolve("./_runtime");
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
@@ -76,26 +74,36 @@ function printLastLines(text, n = 10) {
   console.log(chalk.gray("— fim —\n"));
 }
 
-// ---------- Drive: listar memórias salvas ----------
+// ---------- LIST_MEMORY (agora busca também nas subpastas) ----------
 async function listMemory() {
-  const auth  = await authUserOAuth();
+  const auth = await authUserOAuth();
   const drive = driveOAuth(auth);
 
-  const q = [
-    `'${DRIVE_FOLDER_BASE}' in parents`,
-    "trashed=false",
-    "name contains '_CONTEXT.json'",
-    "mimeType!='application/vnd.google-apps.folder'",
-  ].join(" and ");
+  const subfolders = ["Arquivos", "Memorias", "Relatorios", "Transcricoes", "Logs"];
+  const allFiles = [];
 
-  const { data } = await drive.files.list({
-    q,
-    pageSize: 200,
-    fields: "files(id,name,modifiedTime,webViewLink)",
-    orderBy: "modifiedTime desc",
-  });
+  for (const folder of subfolders) {
+    const q = [
+      `('${DRIVE_FOLDER_BASE}' in parents or name='${folder}')`,
+      "trashed=false",
+      "name contains '_CONTEXT.json'",
+      "mimeType!='application/vnd.google-apps.folder'",
+    ].join(" and ");
 
-  const files = (data.files || []).map(f => ({
+    try {
+      const { data } = await drive.files.list({
+        q,
+        pageSize: 200,
+        fields: "files(id,name,modifiedTime,webViewLink,parents)",
+        orderBy: "modifiedTime desc",
+      });
+      if (data.files?.length) allFiles.push(...data.files);
+    } catch (err) {
+      console.warn(`⚠️ Falha ao buscar em ${folder}:`, err.message);
+    }
+  }
+
+  const files = allFiles.map((f) => ({
     id: f.id,
     name: f.name,
     updated: f.modifiedTime,
@@ -103,61 +111,52 @@ async function listMemory() {
   }));
 
   if (!files.length) {
-    console.log(chalk.yellow("Nenhuma memória encontrada."));
+    console.log(chalk.yellow("Nenhuma memória encontrada em subpastas."));
     return [];
   }
 
-  const table = files.map((f, idx) => ({
-    index: idx,
-    id: f.id,
-    name: f.name,
-    updated: f.updated,
-    link: f.link,
-  }));
-  console.table(table);
+  console.table(
+    files.map((f, idx) => ({
+      index: idx,
+      id: f.id,
+      name: f.name,
+      updated: f.updated,
+      link: f.link,
+    }))
+  );
   return files;
 }
 
-// ---------- Drive: baixar arquivo por id ----------
+// ---------- DOWNLOAD ----------
 async function downloadFileById(fileId) {
-  const auth  = await authUserOAuth();
+  const auth = await authUserOAuth();
   const drive = driveOAuth(auth);
-
-  const res = await drive.files.get(
-    { fileId, alt: "media" },
-    { responseType: "arraybuffer" }
-  );
-  const buf = Buffer.from(res.data);
-  return buf.toString("utf-8");
+  const res = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
+  return Buffer.from(res.data).toString("utf-8");
 }
 
-// ---------- Resolve parâmetro --id (índice, id, ou nome parcial) ----------
+// ---------- RESOLVE ID ----------
 async function resolveMemoryId(idOrName) {
-  const list = await listMemory(); // também mostra a tabela
+  const list = await listMemory();
   if (!list.length) throw new Error("Não há memórias para carregar.");
 
-  // caso seja um número (índice da lista)
   if (/^\d+$/.test(idOrName)) {
     const idx = parseInt(idOrName, 10);
     if (idx < 0 || idx >= list.length) throw new Error(`Índice fora do intervalo: ${idx}`);
     return list[idx].id;
   }
 
-  // match por id completo
-  const exact = list.find(f => f.id === idOrName);
+  const exact = list.find((f) => f.id === idOrName);
   if (exact) return exact.id;
 
-  // busca por nome (parcial)
   const lower = idOrName.toLowerCase();
-  const byName = list.filter(f => f.name.toLowerCase().includes(lower));
+  const byName = list.filter((f) => f.name.toLowerCase().includes(lower));
   if (byName.length === 1) return byName[0].id;
   if (byName.length > 1) {
-    console.log(chalk.yellow(`Foram encontrados ${byName.length} arquivos com esse nome/parcial:`));
     console.table(byName.map((f, i) => ({ index: i, id: f.id, name: f.name, updated: f.updated })));
     throw new Error("Seja mais específico (use o ID completo ou um índice).");
   }
-
-  throw new Error(`Não encontrei memória com referência: ${idOrName}`);
+  throw new Error(`Memória não encontrada: ${idOrName}`);
 }
 
 // ---------- LOAD_MEMORY ----------
@@ -166,7 +165,6 @@ async function loadMemory({ id }) {
   const fileId = await resolveMemoryId(id);
   const content = await downloadFileById(fileId);
 
-  // valida JSON
   let json;
   try {
     json = JSON.parse(content);
@@ -174,30 +172,26 @@ async function loadMemory({ id }) {
     throw new Error("Arquivo baixado não é um JSON válido.");
   }
 
-  // grava no buffer local
   const runtimeDir = ensureRuntimePath();
   const outPath = path.join(runtimeDir, "context_active.json");
   await fsp.writeFile(outPath, pretty(json), "utf-8");
 
   console.log(chalk.green("✅ Contexto restaurado em:"), outPath);
-
-  // imprime as últimas 10 linhas do JSON formatado
   printLastLines(pretty(json), 10);
 
-  // retorna alguns metadados úteis
   const stats = {
     saved_to: outPath,
     keys: Object.keys(json),
     snapshot_at: json.snapshot_at || null,
     total_files: json.total_files || (Array.isArray(json.files) ? json.files.length : undefined),
   };
-  console.log(chalk.cyan("ℹ️  Metadados:"), stats);
+  console.log(chalk.cyan("ℹ️ Metadados:"), stats);
   return stats;
 }
 
-// ---------- Índice Global: leitura ----------
+// ---------- ÍNDICE GLOBAL ----------
 async function readGlobalIndex() {
-  const auth  = await authUserOAuth();
+  const auth = await authUserOAuth();
   const drive = driveOAuth(auth);
 
   const q = [
@@ -213,7 +207,7 @@ async function readGlobalIndex() {
   try {
     const res = await drive.files.get({ fileId: file.id, alt: "media" }, { responseType: "text" });
     const json = JSON.parse(res.data);
-    return Array.isArray(json) ? json : (Array.isArray(json.records) ? json.records : json);
+    return Array.isArray(json) ? json : json.records || [];
   } catch {
     return [];
   }
@@ -226,35 +220,34 @@ async function listProjects() {
     console.log(chalk.yellow("Nenhum registro no índice global."));
     return [];
   }
-  const projects = [...new Set(index.map(e => e.project).filter(Boolean))];
+
+  const projects = [...new Set(index.map((e) => e.project).filter(Boolean))];
   if (!projects.length) {
     console.log(chalk.yellow("Índice presente, mas sem campo 'project'."));
     return [];
   }
+
   console.table(projects.map((p, i) => ({ index: i, project: p })));
   return projects;
 }
 
-// ---------- LOAD_PROJECT (carrega o último contexto de um projeto) ----------
+// ---------- LOAD_PROJECT ----------
 async function loadProject({ project }) {
   if (!project) throw new Error("Informe --project=\"NOME_DO_PROJETO\"");
 
   const index = await readGlobalIndex();
-  const rows  = index
-    .filter(e => e.project === project)
+  const rows = index
+    .filter((e) => e.project === project)
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   if (!rows.length) throw new Error(`Projeto '${project}' não encontrado no índice.`);
 
-  // pega o último (mais recente)
   const last = rows[0];
   const link = last.link || "";
   const m = /\/d\/([^/]+)/.exec(link);
   const fileId = m ? m[1] : last.id;
 
-  if (!fileId) {
-    throw new Error("Registro no índice não contém ID nem link válido.");
-  }
+  if (!fileId) throw new Error("Registro no índice não contém ID nem link válido.");
 
   console.log(chalk.cyan(`↪ Carregando memória mais recente de '${project}':`), last.title);
   return await loadMemory({ id: fileId });
@@ -264,15 +257,14 @@ async function loadProject({ project }) {
 async function main() {
   try {
     const args = Object.fromEntries(
-      process.argv.slice(2).map(a => {
+      process.argv.slice(2).map((a) => {
         const [k, ...r] = a.replace(/^--/, "").split("=");
         return [k, r.join("=")];
       })
     );
+
     const cmd = (args.cmd || "").toUpperCase();
-    if (!cmd) {
-      throw new Error("Use: --cmd=LIST_MEMORY|LOAD_MEMORY|LIST_PROJECTS|LOAD_PROJECT");
-    }
+    if (!cmd) throw new Error("Use: --cmd=LIST_MEMORY|LOAD_MEMORY|LIST_PROJECTS|LOAD_PROJECT");
 
     switch (cmd) {
       case "LIST_MEMORY":
@@ -297,8 +289,6 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
-}
+if (import.meta.url === `file://${process.argv[1]}`) main();
 
 export { listMemory, loadMemory, listProjects, loadProject };
