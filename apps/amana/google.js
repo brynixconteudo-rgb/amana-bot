@@ -6,25 +6,69 @@ import crypto from "crypto";
 const TZ = "America/Sao_Paulo";
 
 // ============================================================
-// 🔐 AUTENTICAÇÃO GOOGLE VIA OAUTH
+// 🔎 Util: ENV + logs
+// ============================================================
+function envGet(k, alt) {
+  return process.env[k] || (alt ? process.env[alt] : undefined);
+}
+function logInfo(obj, msg) { try { console.log("[AMANA][INFO]", msg, JSON.stringify(obj)); } catch { console.log("[AMANA][INFO]", msg); } }
+function logErr(obj, msg) { try { console.error("[AMANA][ERROR]", msg, JSON.stringify(obj)); } catch { console.error("[AMANA][ERROR]", msg); } }
+
+// Escopos necessários para tudo que o BOT faz
+const REQUIRED_SCOPES = new Set([
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.send",
+]);
+
+// ============================================================
+// 🔐 AUTENTICAÇÃO GOOGLE VIA OAUTH (somente ENV, sem cache)
 // ============================================================
 export async function authenticateGoogle() {
-  const {
-    GOOGLE_OAUTH_CLIENT_ID,
-    GOOGLE_OAUTH_CLIENT_SECRET,
-    GOOGLE_OAUTH_REFRESH_TOKEN,
-  } = process.env;
+  const CLIENT_ID = envGet("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_CLIENT_ID");
+  const CLIENT_SECRET = envGet("GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET");
+  const REFRESH_TOKEN = envGet("GOOGLE_OAUTH_REFRESH_TOKEN", "GOOGLE_REFRESH_TOKEN");
 
-  if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET || !GOOGLE_OAUTH_REFRESH_TOKEN) {
-    throw new Error("Variáveis OAuth ausentes. Defina GOOGLE_OAUTH_CLIENT_ID / SECRET / REFRESH_TOKEN.");
+  if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN) {
+    throw new Error("Variáveis OAuth ausentes. Defina GOOGLE_OAUTH_CLIENT_ID / SECRET / REFRESH_TOKEN (ou os aliases GOOGLE_CLIENT_*).");
   }
 
+  // Redirect não é usado no fluxo de refresh, mas mantemos o do Playground para consistência.
   const oauth2Client = new google.auth.OAuth2(
-    GOOGLE_OAUTH_CLIENT_ID,
-    GOOGLE_OAUTH_CLIENT_SECRET,
+    CLIENT_ID,
+    CLIENT_SECRET,
     "https://developers.google.com/oauthplayground"
   );
-  oauth2Client.setCredentials({ refresh_token: GOOGLE_OAUTH_REFRESH_TOKEN });
+
+  oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
+
+  // 🔍 Diagnóstico: verificar escopos do access token em runtime
+  try {
+    const { token } = await oauth2Client.getAccessToken();
+    if (!token) throw new Error("Falha ao obter access_token a partir do refresh_token.");
+    const r = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`);
+    const info = await r.json();
+    const scopes = String(info.scope || "").split(" ").filter(Boolean);
+    const scopesSet = new Set(scopes);
+
+    logInfo({ gotToken: true, scopes }, "GOOGLE_OAUTH_TOKENINFO");
+
+    // Aceita gmail.modify como extra, mas exige os 3 abaixo.
+    const missing = [];
+    for (const s of REQUIRED_SCOPES) if (!scopesSet.has(s)) missing.push(s);
+
+    if (missing.length) {
+      throw new Error(
+        `Insufficient Permission (escopos ausentes no token): ${missing.join(", ")}. ` +
+        `Regenere o refresh_token no OAuth Playground com: ` +
+        `https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send`
+      );
+    }
+  } catch (e) {
+    logErr({ message: String(e?.message || e) }, "GOOGLE_OAUTH_SCOPE_CHECK_FAILED");
+    throw e;
+  }
+
   return oauth2Client;
 }
 
@@ -36,15 +80,15 @@ export async function googleTest(auth) {
   const gmail = google.gmail({ version: "v1", auth });
   const calendar = google.calendar({ version: "v3", auth });
 
-  const driveInfo = await drive.about.get({ fields: "user,storageQuota" });
-  const calendars = await calendar.calendarList.list({ maxResults: 5 });
-  const labels = await gmail.users.labels.list({ userId: "me" });
+  const driveInfo = await drive.about.get({ fields: "user,storageQuota" }).catch(e => ({ data: {}, _err: e }));
+  const calendars = await calendar.calendarList.list({ maxResults: 5 }).catch(e => ({ data: { items: [] }, _err: e }));
+  const labels = await gmail.users.labels.list({ userId: "me" }).catch(e => ({ data: { labels: [] }, _err: e }));
 
   return {
-    drive_user: driveInfo.data.user?.displayName || "desconhecido",
-    total_storage: String(driveInfo.data.storageQuota?.limit || "0"),
-    calendars: (calendars.data.items || []).map((c) => c.summary),
-    gmail_labels: (labels.data.labels || []).slice(0, 5).map((l) => l.name),
+    drive_user: driveInfo?.data?.user?.displayName || "desconhecido",
+    total_storage: String(driveInfo?.data?.storageQuota?.limit || "0"),
+    calendars: (calendars?.data?.items || []).map((c) => c.summary),
+    gmail_labels: (labels?.data?.labels || []).slice(0, 5).map((l) => l.name),
   };
 }
 
@@ -56,6 +100,7 @@ const SHEETS_SPREADSHEET_ID = process.env.SHEETS_SPREADSHEET_ID;
 
 export async function runCommand(auth, command, data = {}) {
   let result;
+  logInfo({ command, dataKeys: Object.keys(data || {}) }, "RUN_COMMAND");
   switch (command) {
     case "SAVE_FILE":
       result = await saveFile(auth, data); break;
@@ -72,7 +117,7 @@ export async function runCommand(auth, command, data = {}) {
     default:
       throw new Error(`Comando desconhecido: ${command}`);
   }
-  await updateIndex(auth, { command, data, result });
+  await updateIndex(auth, { command, data, result }).catch(e => logErr({ err: String(e) }, "UPDATE_INDEX_FAILED"));
   return result;
 }
 
@@ -98,11 +143,10 @@ async function saveFile(auth, { name, mimeType = "text/plain", base64, text, fol
 // ============================================================
 async function sendEmail(auth, { to, cc, bcc, subject, html, body }) {
   const gmail = google.gmail({ version: "v1", auth });
-  const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
 
   if (!to || (Array.isArray(to) && to.length === 0)) throw new Error("Nenhum destinatário informado.");
-
   const recipients = Array.isArray(to) ? to.join(", ") : to;
+
   const headers = [
     `To: ${recipients}`,
     cc ? `Cc: ${cc}` : null,
@@ -113,9 +157,7 @@ async function sendEmail(auth, { to, cc, bcc, subject, html, body }) {
   ].filter(Boolean).join("\n");
 
   const message = `${headers}\n\n${html || body || ""}`;
-  const encodedMessage = Buffer.from(message)
-    .toString("base64")
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const encodedMessage = Buffer.from(message).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
   const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw: encodedMessage } });
   return { id: sent.data.id, to: recipients, subject };
@@ -148,31 +190,36 @@ async function createEvent(auth, { summary, start, end, attendees = [], location
 }
 
 // ============================================================
-// 4️⃣ MOSTRAR AGENDA (NOVO)
+// 4️⃣ MOSTRAR AGENDA
 // ============================================================
 async function showAgenda(auth, { maxResults = 5 } = {}) {
   const calendar = google.calendar({ version: "v3", auth });
   const now = new Date();
-  const endOfDay = new Date();
-  endOfDay.setHours(23, 59, 59);
+  const endOfDay = new Date(); endOfDay.setHours(23, 59, 59);
 
-  const res = await calendar.events.list({
-    calendarId: "primary",
-    timeMin: now.toISOString(),
-    timeMax: endOfDay.toISOString(),
-    singleEvents: true,
-    orderBy: "startTime",
-    maxResults,
-  });
-
-  const events = res.data.items || [];
-  return {
-    events: events.map(ev => ({
-      summary: ev.summary || "Sem título",
-      startTime: ev.start?.dateTime || ev.start?.date,
-      endTime: ev.end?.dateTime || ev.end?.date,
-    })),
-  };
+  try {
+    const res = await calendar.events.list({
+      calendarId: "primary",
+      timeMin: now.toISOString(),
+      timeMax: endOfDay.toISOString(),
+      singleEvents: true,
+      orderBy: "startTime",
+      maxResults,
+    });
+    const events = res.data.items || [];
+    return {
+      events: events.map(ev => ({
+        summary: ev.summary || "Sem título",
+        startTime: ev.start?.dateTime || ev.start?.date,
+        endTime: ev.end?.dateTime || ev.end?.date,
+      })),
+    };
+  } catch (err) {
+    const status = err?.response?.status;
+    const data = err?.response?.data;
+    logErr({ status, data }, "CAL_EVENTS_LIST_ERROR");
+    throw err;
+  }
 }
 
 // ============================================================
