@@ -19,6 +19,8 @@ const REQUIRED_SCOPES = new Set([
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/spreadsheets",
 ]);
 
 // ============================================================
@@ -53,15 +55,19 @@ export async function authenticateGoogle() {
 
     logInfo({ gotToken: true, scopes }, "GOOGLE_OAUTH_TOKENINFO");
 
-    // Aceita gmail.modify como extra, mas exige os 3 abaixo.
+    // Aceita gmail.modify como extra, mas exige os abaixo.
     const missing = [];
     for (const s of REQUIRED_SCOPES) if (!scopesSet.has(s)) missing.push(s);
 
     if (missing.length) {
       throw new Error(
         `Insufficient Permission (escopos ausentes no token): ${missing.join(", ")}. ` +
-        `Regenere o refresh_token no OAuth Playground com: ` +
-        `https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send`
+        `Regenere o refresh_token no OAuth Playground com TODOS: ` +
+        `https://www.googleapis.com/auth/calendar ` +
+        `https://www.googleapis.com/auth/gmail.readonly ` +
+        `https://www.googleapis.com/auth/gmail.send ` +
+        `https://www.googleapis.com/auth/drive ` +
+        `https://www.googleapis.com/auth/spreadsheets`
       );
     }
   } catch (e) {
